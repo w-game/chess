@@ -43,13 +43,13 @@ class PlayerDataset(Dataset):
         
         white_game_list = games["white"]
         black_game_list = games["black"]
-        
-        desired_length = 30
-        valid_white_games = [g for g in white_game_list if g['state'].size(0) >= desired_length]
-        valid_black_games = [g for g in black_game_list if g['state'].size(0) >= desired_length]
 
-        selected_white_games = random.sample(valid_white_games, self.games_per_player)
-        selected_black_games = random.sample(valid_black_games, self.games_per_player)
+        # desired_length = 30
+        # valid_white_games = [g for g in white_game_list if g['state'].size(0) >= desired_length]
+        # valid_black_games = [g for g in black_game_list if g['state'].size(0) >= desired_length]
+
+        selected_white_games = random.sample(white_game_list, self.games_per_player)
+        selected_black_games = random.sample(black_game_list, self.games_per_player)
 
         selected_games = selected_white_games + selected_black_games
 

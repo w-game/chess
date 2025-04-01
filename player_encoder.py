@@ -1,20 +1,22 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from collections import Counter
 
 from player_encoder.encoder import TransformerEncoder
 from player_encoder.dataset import PlayerDataset
 
 from sklearn.decomposition import PCA
 import json
-import random
-import  numpy as np
+
+import os
+
+from torch.utils.data import DataLoader
+import multiprocessing as mp
+
 
 
 class SupConLoss(nn.Module):
@@ -89,30 +91,46 @@ class SupConLoss(nn.Module):
 
         return loss
 
-import os
+def worker_init_fn(worker_id):
+    import os
+    # 确保每个 worker 都允许重复加载 OpenMP 运行时（如果你必须这么做）
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+    # 限制每个 worker 使用单线程，防止多线程冲突
+    os.environ["OMP_NUM_THREADS"] = "1"
 
-from torch.utils.data import DataLoader
-class EncoderTrainer():
+
+def flatten_collate(batch):
+    flat = [item for player_games in batch for item in player_games]
+    states, actions, masks, player_ids = zip(*flat)
+    return (
+        torch.stack(states),        # [B, T, 112, 8, 8]
+        torch.stack(actions),       # [B, T]
+        torch.stack(masks),         # [B, T]
+        torch.tensor(player_ids)    # [B]
+    )
+
+
+class EncoderTrainer:
     def __init__(self, dataset, max_len=50):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(self.device)
         self.loss_fn = SupConLoss(temperature=0.07)
 
-        self.loader = DataLoader(dataset, 
-                                 batch_size=4, 
-                                 shuffle=True, 
-                                 collate_fn=self.flatten_collate, 
-                                 num_workers=8, 
+        self.loader = DataLoader(dataset,
+                                 batch_size=4,
+                                 shuffle=True,
+                                 collate_fn=flatten_collate,
+                                 num_workers=8,
                                  pin_memory=True,
-                                 # worker_init_fn=worker_init_fn
+                                 worker_init_fn=worker_init_fn
                                  )
 
         self.loader_test = DataLoader(dataset,
-                                 batch_size=4,
-                                 shuffle=True,
-                                 collate_fn=self.flatten_collate,
-                                 pin_memory=True,
-                                 )
+                                      batch_size=4,
+                                      shuffle=True,
+                                      collate_fn=flatten_collate,
+                                      pin_memory=True,
+                                      )
         
         self.encoder = TransformerEncoder(
             cnn_in_channels=112, action_size=1858,
@@ -121,16 +139,6 @@ class EncoderTrainer():
             dropout=0.1, max_seq_len=max_len
         ).to(self.device)
         self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
-
-    def flatten_collate(self, batch):
-        flat = [item for player_games in batch for item in player_games]
-        states, actions, masks, player_ids = zip(*flat)
-        return (
-            torch.stack(states),        # [B, T, 112, 8, 8]
-            torch.stack(actions),       # [B, T]
-            torch.stack(masks),         # [B, T]
-            torch.tensor(player_ids)    # [B]
-        )
 
     def train(self, epochs=60, save_path="./models/player_encoder.pt"):
         for epoch in range(epochs):
@@ -176,7 +184,7 @@ class EncoderTrainer():
                 self.visualize_embeddings("./demo.png", "./demo_tsne.png")
             
     def load_model(self):
-        path = "./models/player_encoder.pt"
+        path = "models/player_encoder_save_2.pt"
         if os.path.exists(path):
             d = torch.load(path, weights_only=True)
             self.encoder.load_state_dict(d["model_state_dict"])
@@ -273,110 +281,14 @@ class EncoderTrainer():
         plt = self.visualize_embeddings_tsne(embeddings, labels)
         plt.savefig(tsne_path, dpi=300)
         
-            
-
-import multiprocessing as mp
-mp.set_start_method("spawn", force=True)
-torch.multiprocessing.set_sharing_strategy('file_system')
-
-def load_file(file_path):
-    return torch.load(file_path, weights_only=True)  
-
-def save_batch(batch, idx):
-    out_path = f"./chess_data_parse/dataset_3/batch_{idx}.pt"
-    torch.save(batch, out_path)
-    print(f"batch {idx} done (save process pid: {os.getpid()})")
-
-def demo():
-    folder = "./chess_data_parse/dataset_2"
-    files = [os.path.join(folder, fname) for fname in os.listdir(folder)]
-
-    # Pool A: 负责并行加载
-    load_pool = mp.Pool(processes=8)
-    # Pool B: 负责并行保存
-    save_pool = mp.Pool(processes=2)  # 保存用 2~4 个进程就够了，一般不必太多
-
-    batch = []
-    idx = 1
-
-    for games in load_pool.imap(load_file, files):
-        batch.append(games)
-        if len(batch) == 32:
-            # 把“保存任务”投递给 save_pool
-            save_pool.apply_async(save_batch, args=(batch, idx))
-            idx += 1
-            batch = []
-
-    # 剩下不到 32 个文件，也要最后保存一次
-    if batch:
-        save_pool.apply_async(save_batch, args=(batch, idx))
-
-    # 关闭并等待两个进程池的任务完成
-    load_pool.close()
-    load_pool.join()
-
-    save_pool.close()
-    save_pool.join()
-    
-def filter_player():
-    player_ids = []
-    processed = {}
-    # 遍历所有玩家，预筛选满足条件的玩家
-    for player_id, file_path in player_files.items():
-        games = torch.load(file_path, weights_only=True)
-        white_game_list = games["white"]
-        black_game_list = games["black"]
-    
-        # 检查每个列表中满足条件的游戏数量
-        valid_white_games = [g for g in white_game_list if g['state'].size(0) >= 30]
-        valid_black_games = [g for g in black_game_list if g['state'].size(0) >= 30]
-    
-        print(player_id, len(valid_white_games), len(valid_black_games))
-    
-        if len(valid_white_games) >= 8 and len(valid_black_games) >= 8:
-            player_ids.append(player_id)
-            processed[player_id] = file_path
-    
-    print(f"筛选后总共保留 {len(player_ids)} 个玩家")
-    
-    with open("processed_players.json", "w", encoding="utf-8") as f:
-        json.dump(processed, f, ensure_ascii=False, indent=2)
-
-# def seed_everything(seed=42):
-#     random.seed(seed)                        # 固定 Python 内置的随机种子
-#     np.random.seed(seed)                     # 固定 NumPy 的随机种子
-#     torch.manual_seed(seed)                  # 固定 CPU 随机种子
-#     torch.cuda.manual_seed(seed)             # 固定单 GPU 随机种子
-#     torch.cuda.manual_seed_all(seed)         # 固定所有 GPU 随机种子
-#     torch.backends.cudnn.deterministic = True  # 确保使用确定性算法
-#     torch.backends.cudnn.benchmark = False     # 禁用 cudnn 自动寻找最优算法
-# 
-# def worker_init_fn(worker_id):
-#     seed_everything(42 + worker_id)
-    
 if __name__ == '__main__':
     max_len = 100
-    # dataset_dir = "./chess_data_parse/dataset_2"
-    # files = []
-    # 
-    # for fname in os.listdir(dataset_dir):
-    #     full_path = os.path.join(dataset_dir, fname)
-    #     files.append(full_path)
-    # 
-    # player_files = {
-    #     i: file for i, file in enumerate(files)
-    # }
 
-    # seed_everything(42)
-
-    with open("processed_players.json", "r", encoding="utf-8") as f:
+    with open("chess_data_parse/processed_players.json", "r", encoding="utf-8") as f:
         player_files = json.load(f)
     dataset = PlayerDataset(player_files, games_per_player=8, max_len=max_len)
 
     trainer = EncoderTrainer(dataset, max_len=max_len)
     trainer.load_model()
     trainer.train()
-    
-    # trainer.visualize_embeddings("./demo.png", "./demo_tsne.png")
 
-    # demo()
