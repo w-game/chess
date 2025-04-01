@@ -16,7 +16,7 @@ import os
 
 from torch.utils.data import DataLoader
 import multiprocessing as mp
-
+import torch.nn.functional as F
 
 
 class SupConLoss(nn.Module):
@@ -100,13 +100,35 @@ def worker_init_fn(worker_id):
 
 
 def flatten_collate(batch):
-    flat = [item for player_games in batch for item in player_games]
-    states, actions, masks, player_ids = zip(*flat)
+    flat_batch = [x for sample in batch for x in sample]  # flatten 所有片段
+    # 现在 flat_batch 是 [(state, action, mask, player_id), ...]，可以正常处理了
+
+    max_len = max(x[0].shape[0] for x in flat_batch)  # x[0] 是 state: [T, 112, 8, 8]
+    max_len = min(100, max_len)
+
+    padded_states, padded_actions, padded_masks, player_ids = [], [], [], []
+    for state, action, mask, player_id in flat_batch:
+        pad_len = max_len - state.shape[0]
+        if pad_len > 0:
+            state = F.pad(state, (0, 0, 0, 0, 0, 0, 0, pad_len))  # pad T dim
+            action = F.pad(action, (0, pad_len))
+            mask = F.pad(mask, (0, pad_len), value=False)
+
+        if state.shape[0] > max_len:
+            state = state[:max_len]
+            action = action[:max_len]
+            mask = mask[:max_len]
+
+        padded_states.append(state)
+        padded_actions.append(action)
+        padded_masks.append(mask)
+        player_ids.append(player_id)
+
     return (
-        torch.stack(states),        # [B, T, 112, 8, 8]
-        torch.stack(actions),       # [B, T]
-        torch.stack(masks),         # [B, T]
-        torch.tensor(player_ids)    # [B]
+        torch.stack(padded_states),     # [B, T, 112, 8, 8]
+        torch.stack(padded_actions),    # [B, T]
+        torch.stack(padded_masks),      # [B, T]
+        torch.tensor(player_ids)        # [B]
     )
 
 

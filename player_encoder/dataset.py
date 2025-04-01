@@ -34,6 +34,40 @@ class PlayerDataset(Dataset):
             pad_tensor = torch.full(pad_size, pad_value, dtype=tensor.dtype, device=tensor.device)
             return torch.cat([tensor, pad_tensor], dim=dim)
 
+    def extract_segments_from_game(self, state, action, mask, num_segments=3, segment_len=10):
+        """
+        从一盘棋中抽取 num_segments 个片段，每段 segment_len 步。
+        state: [T, C, 8, 8]
+        action: [T]
+        mask: [T]
+        """
+        T = state.size(0)
+        segments = []
+
+        if T < segment_len:
+            return []  # 太短的局面，跳过
+
+        # 计算采样起点范围（避免越界）
+        margin = T - segment_len
+        if margin <= 0:
+            return []
+
+        # 如果总长度太短，最多采样一段
+        if T < segment_len * 2:
+            start_idxs = [random.randint(0, margin)]
+        else:
+            # 取 num_segments 个均匀分布的采样点（避免全落在前段）
+            ratios = torch.linspace(0.2, 0.8, num_segments)  # 相对时间点
+            start_idxs = [min(int(r * T), margin) for r in ratios]
+
+        for start in start_idxs:
+            seg_state = state[start: start + segment_len]
+            seg_action = action[start: start + segment_len]
+            seg_mask = mask[start: start + segment_len]
+            segments.append((seg_state, seg_action, seg_mask))
+
+        return segments
+
     def __getitem__(self, index):
         player_id = self.player_ids[index]
 
@@ -59,12 +93,14 @@ class PlayerDataset(Dataset):
             action = game['action'] # [T]
             mask = game['mask']     # [T]
 
-            state = self.pad_or_truncate(state, self.max_len, pad_value=0)              # [max_len, 112, 8, 8]
-            action = self.pad_or_truncate(action, self.max_len, pad_value=0)            # [max_len]
-            mask = self.pad_or_truncate(mask, self.max_len, pad_value=False)
+            # segments = self.extract_segments_from_game(state, action, mask, num_segments=3, segment_len=10)
+            #
+            # for seg_state, seg_action, seg_mask in segments:
+            #
+            #     if self.transform:
+            #         seg_state, seg_action, seg_mask = self.transform(seg_state, seg_action, seg_mask)
 
-            if self.transform:
-                state, action, mask = self.transform(state, action, mask)
+                # processed.append((seg_state, seg_action, seg_mask, int(player_id)))
             processed.append((state, action, mask, int(player_id)))
 
         return processed  # List[(state, action, mask, player_id)]
