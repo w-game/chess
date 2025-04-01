@@ -77,7 +77,7 @@ class SupConLoss(nn.Module):
         mask = contrast_mask * logits_mask
 
         # log-softmax
-        exp_logits = torch.exp(logits) * logits_mask
+        exp_logits = torch.exp(logits.clamp(min=-20, max=20)) * logits_mask
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-12)
 
         # mean of log-likelihood over positive
@@ -111,20 +111,15 @@ def flatten_collate(batch):
 
 
 class EncoderTrainer:
-    def __init__(self, dataset, max_len=50):
+    def __init__(self, train_loader, val_loader, test_loader, max_len=50):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(self.device)
         self.loss_fn = SupConLoss(temperature=0.07)
 
-        self.loader = DataLoader(dataset,
-                                 batch_size=4,
-                                 shuffle=True,
-                                 collate_fn=flatten_collate,
-                                 num_workers=16,
-                                 pin_memory=True,
-                                 worker_init_fn=worker_init_fn
-                                 )
-        
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.test_loader = test_loader
+
         self.encoder = TransformerEncoder(
             cnn_in_channels=112, action_size=1858,
             state_embed_dim=256, action_embed_dim=256, fusion_out_dim=256,
@@ -133,7 +128,20 @@ class EncoderTrainer:
         ).to(self.device)
         self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
 
-    def train(self, epochs=60, save_path="./models/player_encoder.pt"):
+    @torch.no_grad()
+    def val(self):
+        total_loss = 0
+        batch_count = 0
+        for states, actions, masks, player_ids in self.val_loader:
+            batch_count += 1
+            style_vector = self.encoder(states.to(self.device), actions.to(self.device), masks.to(self.device))
+            loss = self.loss_fn(style_vector, labels=player_ids.to(self.device))
+
+            total_loss += loss.item()
+
+        return total_loss / batch_count
+
+    def train(self, epochs=60, save_path="./models"):
         for epoch in range(epochs):
             self.encoder.train()
             total_loss = 0
@@ -141,7 +149,7 @@ class EncoderTrainer:
     
             print(f"\n🟢 Epoch {epoch+1}/{epochs} started...")
     
-            for states, actions, masks, player_ids in self.loader:
+            for states, actions, masks, player_ids in self.train_loader:
                 batch_count += 1
                 style_vector = self.encoder(states.to(self.device), actions.to(self.device), masks.to(self.device))
                 loss = self.loss_fn(style_vector, labels=player_ids.to(self.device))
@@ -160,37 +168,35 @@ class EncoderTrainer:
     
                 total_loss += loss.item()
                 print(f"  ├─ Batch {batch_count} Loss: {loss.item():.4f}")
-    
+
+            avg_val_loss = self.val()
+
             avg_loss = total_loss / batch_count
-            print(f"✅ [Epoch {epoch+1}] Avg Loss: {avg_loss:.4f}")
-    
-            # ✅ 模型保存
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': self.encoder.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'avg_loss': avg_loss,
-            }, save_path)
-            print(f"📦 Model saved to {save_path}")
+            print(f"✅ [Epoch {epoch+1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss}")
+
+            if (epoch + 1) % 2 == 0:
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': self.encoder.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'avg_loss': avg_loss,
+                }, f"{save_path}/player_encoder_{epoch + 1}.pt")
+                print(f"📦 Model saved to {save_path}")
             
             if (epoch + 1) % 10 == 0:
                 self.visualize_embeddings("./demo.png", "./demo_tsne.png")
             
-    def load_model(self):
-        path = "models/player_encoder.pt"
-        if os.path.exists(path):
-            d = torch.load(path, weights_only=True)
+    def load_model(self, model_path):
+        if os.path.exists(model_path):
+            d = torch.load(model_path)
             self.encoder.load_state_dict(d["model_state_dict"])
             self.optimizer.load_state_dict(d["optimizer_state_dict"])
 
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = 0.0001
-            print(f"load model from {path}")
+            # for param_group in self.optimizer.param_groups:
+            #     param_group['lr'] = 0.0001
+            print(f"load model from {model_path}")
 
     def visualize_embeddings_tsne(self, embeddings, labels):
-        # self.encoder.eval()
-
-        # ===== t-SNE 降维 =====
         print("🔍 Running t-SNE...")
         tsne = TSNE(n_components=2, random_state=42)
         embeddings_2d = tsne.fit_transform(embeddings)
@@ -252,23 +258,14 @@ class EncoderTrainer:
         return plt
             
     def visualize_embeddings(self, pca_path, tsne_path):
-        dataset_test = PlayerDataset(player_files, games_per_player=16, max_len=max_len)
-        loader_test = DataLoader(dataset_test,
-                                      batch_size=4,
-                                      shuffle=True,
-                                      collate_fn=flatten_collate,
-                                      pin_memory=True,
-                                      )
-
         with torch.no_grad():
-            for states, actions, masks, player_ids in loader_test:
+            for states, actions, masks, player_ids in self.test_loader:
                 style_vector = self.encoder(states.to(self.device), actions.to(self.device), masks.to(self.device))
                 loss = self.loss_fn(style_vector, labels=player_ids.to(self.device))
                 print(f"{loss.item()}")
-                if loss.item() < 3.6:
-                    break
-                else:
-                    print("dddd")
+                break
+                # if loss.item() < 3.6:
+                #     break
 
         labels = player_ids.numpy().tolist()  # list
         embeddings = style_vector.cpu().numpy()
@@ -280,15 +277,52 @@ class EncoderTrainer:
         
         plt = self.visualize_embeddings_tsne(embeddings, labels)
         plt.savefig(tsne_path, dpi=300)
+
+def load_dataset_file(path):
+    with open(f"chess_data_parse/{path}.json", "r", encoding="utf-8") as f:
+        return json.load(f)
         
 if __name__ == '__main__':
     max_len = 100
 
-    with open("chess_data_parse/processed_players.json", "r", encoding="utf-8") as f:
-        player_files = json.load(f)
-    dataset = PlayerDataset(player_files, games_per_player=8, max_len=max_len)
+    train_dataset = PlayerDataset(load_dataset_file("train_players"), games_per_player=8, max_len=max_len)
 
-    trainer = EncoderTrainer(dataset, max_len=max_len)
-    trainer.load_model()
-    trainer.train()
+    train_loader = DataLoader(train_dataset,
+                             batch_size=16,
+                             shuffle=True,
+                             collate_fn=flatten_collate,
+                             num_workers=16,
+                             pin_memory=True,
+                             worker_init_fn=worker_init_fn
+                             )
 
+    val_dataset = PlayerDataset(load_dataset_file("val_players"), games_per_player=8, max_len=max_len)
+
+    val_loader = DataLoader(val_dataset,
+                              batch_size=16,
+                              shuffle=True,
+                              collate_fn=flatten_collate,
+                              num_workers=16,
+                              pin_memory=True,
+                              worker_init_fn=worker_init_fn
+                              )
+
+    test_dataset = PlayerDataset(load_dataset_file("test_players"), games_per_player=8, max_len=max_len)
+
+    test_loader = DataLoader(test_dataset,
+                            batch_size=16,
+                            shuffle=True,
+                            collate_fn=flatten_collate,
+                            num_workers=16,
+                            pin_memory=True,
+                            worker_init_fn=worker_init_fn
+                            )
+
+    trainer = EncoderTrainer(train_loader, val_loader, test_loader, max_len=max_len)
+
+    save_path = "./models/model_0"
+    os.makedirs(save_path, exist_ok=True)
+
+    trainer.load_model(f"{save_path}/player_encoder_1.pt")
+
+    trainer.train(save_path=save_path)
