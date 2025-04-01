@@ -49,7 +49,7 @@ def parse_record(record):
 
     return (planes, probs, winner, best_q)
 
-def sample_record(chunkdata, is_white):
+def sample_record(chunkdata):
     """
     Randomly sample through the v4 chunk data and select records
     """
@@ -72,14 +72,14 @@ def sample_record(chunkdata, is_white):
             # add 16 bytes of fake root_q, best_q, root_d, best_d to match V4 format
             record += 16 * b'\x00'
 
-        (ver, probs, planes, us_ooo, us_oo, them_ooo, them_oo, stm, rule50_count, move_count, winner, root_q, best_q, root_d, best_d) = v4_struct.unpack(record)
+        # (ver, probs, planes, us_ooo, us_oo, them_ooo, them_oo, stm, rule50_count, move_count, winner, root_q, best_q, root_d, best_d) = v4_struct.unpack(record)
         
-        if is_white and not stm:
-            records.append(record)
-        elif not is_white and stm:
-            records.append(record)
-        else:
-            continue
+        # if is_white and not stm:
+        #     records.append(record)
+        # elif not is_white and stm:
+        #     records.append(record)
+        # else:
+        #     continue
 
     return records
 
@@ -104,8 +104,6 @@ def get_latest_chunks(path):
 
     whites.sort()
     blacks.sort()
-    # random.shuffle(blacks)
-    # random.shuffle(whites)
 
     return whites, blacks
 
@@ -124,7 +122,7 @@ def chunk_to_records(chunk_file_lst):
     for chunk_name in chunk_file_lst.copy():
         with gzip.open(chunk_name, 'rb') as chunk_file:
             chunk = chunk_file.read()
-            lst = sample_record(chunk, True)
+            lst = sample_record(chunk)
             record.extend(lst)
             
     return record
@@ -166,11 +164,9 @@ def chunk_to_trainingdata(player_name):
 
             for record in game_records:
                 planes, probs, winner, best_q = byte_to_np(record)
-                # action_idx = np.argmax(probs)
 
                 states.append(torch.tensor(planes, dtype=torch.float16))
                 actions.append(torch.tensor(probs, dtype=torch.float16))
-                # masks.append(torch.tensor(True, dtype=torch.bool))
 
             train_data.append({
                 "state": torch.stack(states),
@@ -180,9 +176,6 @@ def chunk_to_trainingdata(player_name):
         dataset[color] = train_data
 
     return dataset
-    # save_path = f"./dataset_4/{player_name}.pt"
-    # torch.save(dataset, save_path)
-    # print(f"Saved games to {save_path}")
 
 from multiprocessing import Pool, cpu_count
 
@@ -236,4 +229,5 @@ def batch_process_all_players(player_root="./players", num_workers=None, batch_s
               f"({len(results)} players) to {save_path}")
         
 if __name__ == '__main__':
-    batch_process_all_players()
+    # batch_process_all_players()
+    chunk_to_trainingdata("aaph")

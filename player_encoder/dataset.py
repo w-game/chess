@@ -1,8 +1,11 @@
+import json
 import random
 import time
 
 from torch.utils.data import Dataset
 import torch
+import subprocess
+
 
 class PlayerDataset(Dataset):
     def __init__(self, player_files, games_per_player=4, max_len=100, transform=None, desired_length=30):
@@ -87,9 +90,10 @@ class PlayerDataset(Dataset):
         for game in selected_games:
             state = game['state']   # [T, 112, 8, 8]
             action = game['action'] # [T]
+            print(action[0])
             mask = game['mask']     # [T]
 
-            segments = self.extract_segments_from_game(state, action, mask, num_segments=3, segment_len=10)
+            segments = self.extract_segments_from_game(state, action, mask, num_segments=3, segment_len=30)
 
             for seg_state, seg_action, seg_mask in segments:
 
@@ -100,4 +104,43 @@ class PlayerDataset(Dataset):
             # processed.append((state, action, mask, int(player_id)))
 
         return processed  # List[(state, action, mask, player_id)]
+
+def lc0_eval_fens(fens, lc0_path="lc0", weights_path="your_network.pb.gz"):
+    evals = []
+    proc = subprocess.Popen(
+        [lc0_path, f"--weights={weights_path}"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        bufsize=1,
+    )
+    for fen in fens:
+        proc.stdin.write(f"position fen {fen}\ngo depth 1\n")
+        proc.stdin.flush()
+        score = None
+        for line in proc.stdout:
+            if "score cp" in line:
+                try:
+                    score = int(line.split("score cp")[1].split()[0])
+                except:
+                    score = 0
+                break
+        evals.append(score if score is not None else 0)
+    proc.stdin.close()
+    proc.wait()
+    return evals
+
+
+if __name__ == '__main__':
+    with open(f"chess_data_parse/train_players.json", "r", encoding="utf-8") as f:
+        files = json.load(f)
+
+    for file in files:
+        games = torch.load(file, weights_only=True)
+
+        white_game_list = games["white"]
+        black_game_list = games["black"]
+
+        game = white_game_list[0]
         
