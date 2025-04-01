@@ -34,7 +34,7 @@ class PlayerDataset(Dataset):
             pad_tensor = torch.full(pad_size, pad_value, dtype=tensor.dtype, device=tensor.device)
             return torch.cat([tensor, pad_tensor], dim=dim)
 
-    def extract_segments_from_game(self, state, action, mask, num_segments=3, segment_len=10):
+    def extract_segments_from_game(self, state, action, mask, num_segments=3, segment_len=30):
         """
         从一盘棋中抽取 num_segments 个片段，每段 segment_len 步。
         state: [T, C, 8, 8]
@@ -78,10 +78,6 @@ class PlayerDataset(Dataset):
         white_game_list = games["white"]
         black_game_list = games["black"]
 
-        # desired_length = 30
-        # valid_white_games = [g for g in white_game_list if g['state'].size(0) >= desired_length]
-        # valid_black_games = [g for g in black_game_list if g['state'].size(0) >= desired_length]
-
         selected_white_games = random.sample(white_game_list, self.games_per_player)
         selected_black_games = random.sample(black_game_list, self.games_per_player)
 
@@ -93,15 +89,15 @@ class PlayerDataset(Dataset):
             action = game['action'] # [T]
             mask = game['mask']     # [T]
 
-            # segments = self.extract_segments_from_game(state, action, mask, num_segments=3, segment_len=10)
-            #
-            # for seg_state, seg_action, seg_mask in segments:
-            #
-            #     if self.transform:
-            #         seg_state, seg_action, seg_mask = self.transform(seg_state, seg_action, seg_mask)
+            segments = self.extract_segments_from_game(state, action, mask, num_segments=3, segment_len=10)
 
-                # processed.append((seg_state, seg_action, seg_mask, int(player_id)))
-            processed.append((state, action, mask, int(player_id)))
+            for seg_state, seg_action, seg_mask in segments:
+
+                if self.transform:
+                    seg_state, seg_action, seg_mask = self.transform(seg_state, seg_action, seg_mask)
+
+                processed.append((seg_state, seg_action, seg_mask, int(player_id)))
+            # processed.append((state, action, mask, int(player_id)))
 
         return processed  # List[(state, action, mask, player_id)]
         
