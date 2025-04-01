@@ -120,17 +120,10 @@ class EncoderTrainer:
                                  batch_size=4,
                                  shuffle=True,
                                  collate_fn=flatten_collate,
-                                 num_workers=8,
+                                 num_workers=16,
                                  pin_memory=True,
                                  worker_init_fn=worker_init_fn
                                  )
-
-        self.loader_test = DataLoader(dataset,
-                                      batch_size=4,
-                                      shuffle=True,
-                                      collate_fn=flatten_collate,
-                                      pin_memory=True,
-                                      )
         
         self.encoder = TransformerEncoder(
             cnn_in_channels=112, action_size=1858,
@@ -184,7 +177,7 @@ class EncoderTrainer:
                 self.visualize_embeddings("./demo.png", "./demo_tsne.png")
             
     def load_model(self):
-        path = "models/player_encoder_save_2.pt"
+        path = "models/player_encoder.pt"
         if os.path.exists(path):
             d = torch.load(path, weights_only=True)
             self.encoder.load_state_dict(d["model_state_dict"])
@@ -196,18 +189,18 @@ class EncoderTrainer:
 
     def visualize_embeddings_tsne(self, embeddings, labels):
         # self.encoder.eval()
-    
+
         # ===== t-SNE 降维 =====
         print("🔍 Running t-SNE...")
         tsne = TSNE(n_components=2, random_state=42)
         embeddings_2d = tsne.fit_transform(embeddings)
         print(embeddings_2d.shape)  # (N, 2)
-    
+
         # 可视化 scatter plot
         plt.figure(figsize=(16, 8))
         num_classes = len(set(labels))
         palette = sns.husl_palette(num_classes)
-    
+
         sns.scatterplot(
             x=embeddings_2d[:, 0],
             y=embeddings_2d[:, 1],
@@ -217,13 +210,13 @@ class EncoderTrainer:
             s=50,
             alpha=0.6
         )
-    
+
         plt.title("t-SNE Visualization of Style Embeddings")
         plt.xlabel("Dimension 1")
         plt.ylabel("Dimension 2")
         plt.legend(title="Player ID", bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
-        
+
         return plt\
 
     def visualize_embeddings_pca(self, embeddings, labels):
@@ -258,10 +251,17 @@ class EncoderTrainer:
     
         return plt
             
-    
     def visualize_embeddings(self, pca_path, tsne_path):
+        dataset_test = PlayerDataset(player_files, games_per_player=16, max_len=max_len)
+        loader_test = DataLoader(dataset_test,
+                                      batch_size=4,
+                                      shuffle=True,
+                                      collate_fn=flatten_collate,
+                                      pin_memory=True,
+                                      )
+
         with torch.no_grad():
-            for states, actions, masks, player_ids in self.loader_test:
+            for states, actions, masks, player_ids in loader_test:
                 style_vector = self.encoder(states.to(self.device), actions.to(self.device), masks.to(self.device))
                 loss = self.loss_fn(style_vector, labels=player_ids.to(self.device))
                 print(f"{loss.item()}")
