@@ -310,7 +310,7 @@ if __name__ == '__main__':
     train_dataset = PlayerDataset(load_dataset_file("train_players"), games_per_player=8, max_len=max_len)
 
     train_loader = DataLoader(train_dataset,
-                             batch_size=16,
+                             batch_size=8,
                              shuffle=True,
                              collate_fn=flatten_collate,
                              num_workers=16,
@@ -321,7 +321,7 @@ if __name__ == '__main__':
     val_dataset = PlayerDataset(load_dataset_file("val_players"), games_per_player=8, max_len=max_len)
 
     val_loader = DataLoader(val_dataset,
-                              batch_size=16,
+                              batch_size=8,
                               shuffle=True,
                               collate_fn=flatten_collate,
                               num_workers=16,
@@ -332,7 +332,7 @@ if __name__ == '__main__':
     test_dataset = PlayerDataset(load_dataset_file("test_players"), games_per_player=8, max_len=max_len)
 
     test_loader = DataLoader(test_dataset,
-                            batch_size=16,
+                            batch_size=8,
                             shuffle=True,
                             collate_fn=flatten_collate,
                             num_workers=16,
