@@ -71,24 +71,9 @@ def sample_record(chunkdata):
 
     records = []
     for i in range(0, len(chunkdata), record_size):
-        # if 32 > 1:
-        #     # Downsample, using only 1/Nth of the items.
-        #     if random.randint(0, 32-1) != 0:
-        #         continue  # Skip this record.
         record = chunkdata[i:i + record_size]
         if version == V3_VERSION:
-            # add 16 bytes of fake root_q, best_q, root_d, best_d to match V4 format
             record += 16 * b'\x00'
-
-        # (ver, probs, planes, us_ooo, us_oo, them_ooo, them_oo, stm, rule50_count, move_count, winner, root_q, best_q,
-        #  root_d, best_d) = v4_struct.unpack(record)
-
-        # if is_white and not stm:
-        #     records.append(record)
-        # elif not is_white and stm:
-        #     records.append(record)
-        # else:
-        #     continue
 
         records.append(record)
 
@@ -128,7 +113,7 @@ def byte_to_np(record):
     winner = np.frombuffer(winner, dtype=np.float32)  # 三元 winner
     best_q = np.frombuffer(best_q, dtype=np.float32)  # 三元 best_q
 
-    return planes, probs, winner, best_q, stm
+    return planes, probs, winner, best_q
 
 
 def chunk_to_records(chunk_file_lst):
@@ -143,6 +128,9 @@ def chunk_to_records(chunk_file_lst):
 
 
 def chunk_to_trainingdata(player_name):
+    output_dir = f"./dataset/{player_name}"
+    os.makedirs(output_dir, exist_ok=True)
+
     whites, blacks = get_latest_chunks(f"./players/{player_name}")
     if whites is None or blacks is None:
         return
@@ -150,7 +138,6 @@ def chunk_to_trainingdata(player_name):
     white_records = chunk_to_records(whites)
     black_records = chunk_to_records(blacks)
 
-    dataset = {}
     for color, records in zip(["white", "black"], [white_records, black_records]):
         matching_indices = []
 
@@ -183,16 +170,15 @@ def chunk_to_trainingdata(player_name):
                 actions.append(torch.tensor(probs, dtype=torch.float16))
 
             if len(states) >= 60:
-                train_data.append({
+                game_dict = {
                     "states": torch.stack(states),
                     "actions": torch.stack(actions)
-                })
+                }
+                save_path = os.path.join(output_dir, f"{color}_{len(train_data):04d}.pt")
+                torch.save(game_dict, save_path)
+                train_data.append(save_path)
 
-        print(f"[{player_name}][{color}] train data(state count > 60):", len(train_data))
-
-        dataset[color] = train_data
-
-    torch.save(dataset, "./dataset/" + player_name + ".pt")
+        print(f"[{player_name}][{color}] saved games (state count >= 60):", len(train_data))
 
 
 def process_all_players(player_root="./players"):
@@ -209,5 +195,4 @@ def process_all_players(player_root="./players"):
 
 
 if __name__ == '__main__':
-    # chunk_to_trainingdata("Demo")
     process_all_players()

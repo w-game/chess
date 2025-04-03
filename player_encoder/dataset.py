@@ -1,6 +1,8 @@
 import json
 import random
 import subprocess
+import os
+from glob import glob
 from collections import OrderedDict
 
 import torch
@@ -129,49 +131,43 @@ class PlayerDataset(Dataset):
         return segments
 
     def get_player_data_by_id(self, player_id, game_num):
-        file_path = self.player_files[player_id]
-        games = torch.load(file_path, weights_only=True)
+        folder_path = self.player_files[player_id]
+        game_files = glob(os.path.join(folder_path, "*.pt"))
+        random.shuffle(game_files)
 
-        white_game_list = list({id(g['states']): g for g in games["white"]}.values())
-        black_game_list = list({id(g['states']): g for g in games["black"]}.values())
-
-        random.shuffle(white_game_list)
-        random.shuffle(black_game_list)
-
-        num_white = game_num // 2
-        num_black = game_num - num_white
-
+        selected_files = game_files[:game_num]
         processed = []
-        for color, games in zip(['white', 'black'], [white_game_list, black_game_list]):
-            selected_games = games[:num_white if color == 'white' else num_black]
-            for game in selected_games:
-                states = game['states']  # [T, 112, 8, 8]
-                # actions = game['actions']  # [T]
-                T = states.size(0)
-                mask = torch.zeros(T, dtype=torch.bool)
 
-                paired_states = []
-                paired_mask = []
+        for file in selected_files:
+            game = torch.load(file, weights_only=True)
+            states = game['states']  # [T, 112, 8, 8]
+            T = states.size(0)
+            mask = torch.zeros(T, dtype=torch.bool)
 
-                if color == 'white':
-                    indices = range(0, T - 1, 2)  # 白方下在偶数步
-                else:
-                    indices = range(1, T - 1, 2)  # 黑方下在奇数步
+            paired_states = []
+            paired_mask = []
 
-                for idx, i in enumerate(indices):
-                    s_t = states[i]
-                    s_tp1 = states[i + 1]
-                    s_pair = torch.cat([s_t, s_tp1], dim=0).half()  # 压缩为 float16
-                    paired_states.append(s_pair)
-                    paired_mask.append(mask[i])
+            # 根据文件名判断颜色
+            color = "white" if "white" in file else "black"
+            if color == 'white':
+                indices = range(0, T - 1, 2)  # 白方下在偶数步
+            else:
+                indices = range(1, T - 1, 2)  # 黑方下在奇数步
 
-                if len(paired_states) < 1:
-                    continue
+            for idx, i in enumerate(indices):
+                s_t = states[i]
+                s_tp1 = states[i + 1]
+                s_pair = torch.cat([s_t, s_tp1], dim=0).half()  # 压缩为 float16
+                paired_states.append(s_pair)
+                paired_mask.append(mask[i])
 
-                paired_states = torch.stack(paired_states)  # [T', 224, 8, 8]
-                paired_mask = torch.tensor(paired_mask, dtype=torch.bool)  # [T']
+            if len(paired_states) < 1:
+                continue
 
-                processed.append((paired_states, paired_mask, int(player_id)))
+            paired_states = torch.stack(paired_states)  # [T', 224, 8, 8]
+            paired_mask = torch.tensor(paired_mask, dtype=torch.bool)  # [T']
+
+            processed.append((paired_states, paired_mask, int(player_id)))
 
         return processed  # List[(state, action, mask, player_id)]
 
