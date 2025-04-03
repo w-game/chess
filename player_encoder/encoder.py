@@ -42,7 +42,7 @@ class BoardCNNEncoder(nn.Module):
         return x
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
+    def __init__(self, d_model, dropout=0.1, max_len=200):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
         pe = torch.zeros(max_len, d_model)  # [max_len, d_model]
@@ -75,15 +75,12 @@ class TransformerEncoder(nn.Module):
         """
         super(TransformerEncoder, self).__init__()
         self.state_encoder = BoardCNNEncoder(in_channels=cnn_in_channels, out_dim=state_embed_dim)
-        # self.action_encoder = ActionEncoder(action_size=action_size, embed_dim=action_embed_dim)
-        # self.fusion = StateActionFusion(state_dim=state_embed_dim, action_dim=action_embed_dim,
-        #                                 out_dim=fusion_out_dim, fusion_method='concat')
         self.pos_encoder = PositionalEncoding(d_model=transformer_d_model, dropout=dropout, max_len=max_seq_len)
         encoder_layer = nn.TransformerEncoderLayer(d_model=transformer_d_model, nhead=num_heads, dropout=dropout, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(transformer_d_model, transformer_d_model)
 
-    def forward(self, states, actions, mask=None):
+    def forward(self, states, mask=None):
         """
         参数:
           states: [batch, seq_len, 112, 8, 8]，状态序列
@@ -99,15 +96,6 @@ class TransformerEncoder(nn.Module):
         state_emb = self.state_encoder(states)  # [batch*seq_len, state_embed_dim]
         state_emb = state_emb.view(batch_size, seq_len, -1)
 
-        # 编码动作
-        # actions = actions.view(batch_size * seq_len)
-        # action_emb = self.action_encoder(actions)  # [batch*seq_len, action_embed_dim]
-        # action_emb = action_emb.view(batch_size, seq_len, -1)
-
-        # 融合状态和动作
-        # token_embeddings = self.fusion(state_emb, action_emb)  # [batch, seq_len, fusion_out_dim]
-
-        # 添加位置编码
         token_embeddings = self.pos_encoder(state_emb)
 
         # Transformer 编码

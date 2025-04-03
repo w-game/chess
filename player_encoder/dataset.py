@@ -7,17 +7,65 @@ import torch
 import subprocess
 
 
+class MetaStyleDataset(Dataset):
+    def __init__(self, player_files, N=5, K=5, Q=5):
+        self.player_dataset = PlayerDataset(player_files)
+        self.N = N
+        self.K = K
+        self.Q = Q
+
+    def __len__(self):
+        return 10000
+
+    def __getitem__(self, index):
+        sampled_ids = random.sample(self.player_dataset.player_ids, self.N)
+
+        support_pos, support_act, support_mask, support_labels = [], [], [], []
+        query_pos, query_act, query_mask, query_labels = [], [], [], []
+
+        for label_id, pid in enumerate(sampled_ids):
+            games = self.player_dataset[pid]
+            random.shuffle(games)
+
+            assert len(games) >= self.K + self.Q, f"玩家 {pid} 样本不够"
+
+            support_games = games[:self.K]
+            query_games = games[self.K:self.K + self.Q]
+
+            for (s, a, m, _) in support_games:
+                support_pos.append(s)
+                support_act.append(a)
+                support_mask.append(m)
+                support_labels.append(label_id)
+
+            for (s, a, m, _) in query_games:
+                query_pos.append(s)
+                query_act.append(a)
+                query_mask.append(m)
+                query_labels.append(label_id)
+
+        return {
+            'support_pos': torch.stack(support_pos),  # [N*K, T, 112, 8, 8]
+            'support_act': torch.stack(support_act),
+            'support_mask': torch.stack(support_mask),
+            'support_labels': torch.tensor(support_labels),
+
+            'query_pos': torch.stack(query_pos),  # [N*Q, T, 112, 8, 8]
+            'query_act': torch.stack(query_act),
+            'query_mask': torch.stack(query_mask),
+            'query_labels': torch.tensor(query_labels),
+        }
+
+
 class PlayerDataset(Dataset):
-    def __init__(self, player_files, games_per_player=4, max_len=100, transform=None, desired_length=30):
+    def __init__(self, player_files, transform=None):
         """
         player_files: Dict[int, str] → 玩家ID映射到文件路径
         games_per_player: 每次采样一个玩家的几局棋
         """
-        self.player_files = player_files              # {player_id: file_path}
-        self.player_ids = list(player_files.keys())   # 所有玩家ID列表
-        self.games_per_player = games_per_player
+        self.player_files = player_files  # {player_id: file_path}
+        self.player_ids = list(player_files.keys())  # 所有玩家ID列表
         self.transform = transform
-        self.max_len = max_len
 
     def __len__(self):
         return len(self.player_ids)
@@ -75,35 +123,48 @@ class PlayerDataset(Dataset):
         player_id = self.player_ids[index]
 
         file_path = self.player_files[player_id]
-        
+
         games = torch.load(file_path, weights_only=True)
-        
+
         white_game_list = games["white"]
         black_game_list = games["black"]
 
-        selected_white_games = random.sample(white_game_list, self.games_per_player)
-        selected_black_games = random.sample(black_game_list, self.games_per_player)
-
-        selected_games = selected_white_games + selected_black_games
+        white_game_list = list({id(g['states']): g for g in white_game_list}.values())
+        black_game_list = list({id(g['states']): g for g in black_game_list}.values())
 
         processed = []
-        for game in selected_games:
-            state = game['state']   # [T, 112, 8, 8]
-            action = game['action'] # [T]
-            print(action[0])
-            mask = game['mask']     # [T]
+        for color, games in zip(['white', 'black'], [white_game_list, black_game_list]):
+            for game in games:
+                states = game['states']  # [T, 112, 8, 8]
+                # actions = game['actions']  # [T]
+                T = states.size(0)
+                mask = torch.zeros(T, device=states.device)
 
-            segments = self.extract_segments_from_game(state, action, mask, num_segments=3, segment_len=30)
+                paired_states = []
+                paired_mask = []
 
-            for seg_state, seg_action, seg_mask in segments:
+                if color == 'white':
+                    indices = range(0, T - 1, 2)  # 白方下在偶数步
+                else:
+                    indices = range(1, T - 1, 2)  # 黑方下在奇数步
 
-                if self.transform:
-                    seg_state, seg_action, seg_mask = self.transform(seg_state, seg_action, seg_mask)
+                for i in indices:
+                    s_t = states[i]
+                    s_tp1 = states[i + 1]
+                    s_pair = torch.cat([s_t, s_tp1], dim=0)  # [224, 8, 8]
+                    paired_states.append(s_pair)
+                    paired_mask.append(mask[i])
 
-                processed.append((seg_state, seg_action, seg_mask, int(player_id)))
-            # processed.append((state, action, mask, int(player_id)))
+                if len(paired_states) < 1:
+                    continue
+
+                paired_states = torch.stack(paired_states)  # [T', 224, 8, 8]
+                paired_mask = torch.tensor(paired_mask)     # [T']
+
+                processed.append((paired_states, paired_mask, int(player_id)))
 
         return processed  # List[(state, action, mask, player_id)]
+
 
 def lc0_eval_fens(fens, lc0_path="lc0", weights_path="your_network.pb.gz"):
     evals = []
@@ -143,4 +204,3 @@ if __name__ == '__main__':
         black_game_list = games["black"]
 
         game = white_game_list[0]
-        

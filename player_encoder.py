@@ -5,9 +5,8 @@ from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-
 from player_encoder.encoder import TransformerEncoder
-from player_encoder.dataset import PlayerDataset
+from player_encoder.dataset import PlayerDataset, MetaStyleDataset
 
 from sklearn.decomposition import PCA
 import json
@@ -91,31 +90,6 @@ class SupConLoss(nn.Module):
 
         return loss
 
-def worker_init_fn(worker_id):
-    import os
-    # 确保每个 worker 都允许重复加载 OpenMP 运行时（如果你必须这么做）
-    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-    # 限制每个 worker 使用单线程，防止多线程冲突
-    os.environ["OMP_NUM_THREADS"] = "1"
-
-
-def flatten_collate(batch):
-    flat_batch = [x for sample in batch for x in sample]  # flatten 所有片段
-
-    padded_states, padded_actions, padded_masks, player_ids = [], [], [], []
-    for state, action, mask, player_id in flat_batch:
-        padded_states.append(state)
-        padded_actions.append(action)
-        padded_masks.append(mask)
-        player_ids.append(player_id)
-
-    return (
-        torch.stack(padded_states),     # [B, T, 112, 8, 8]
-        torch.stack(padded_actions),    # [B, T]
-        torch.stack(padded_masks),      # [B, T]
-        torch.tensor(player_ids)        # [B]
-    )
-
 
 class EncoderTrainer:
     def __init__(self, train_loader, val_loader, test_loader, max_len=50):
@@ -153,33 +127,57 @@ class EncoderTrainer:
             self.encoder.train()
             total_loss = 0
             batch_count = 0
-    
-            print(f"\n🟢 Epoch {epoch+1}/{epochs} started...")
-    
-            for states, actions, masks, player_ids in self.train_loader:
+
+            print(f"\n🟢 Epoch {epoch + 1}/{epochs} started...")
+
+            for batch in self.train_loader:
+                support_pos = batch['support_pos'].to(self.device)
+                support_act = batch['support_act'].to(self.device)
+                support_mask = batch['support_mask'].to(self.device)
+                support_labels = batch['support_labels'].to(self.device)
+
+                query_pos = batch['query_pos'].to(self.device)
+                query_act = batch['query_act'].to(self.device)
+                query_mask = batch['query_mask'].to(self.device)
+                query_labels = batch['query_labels'].to(self.device)
+
                 batch_count += 1
-                style_vector = self.encoder(states.to(self.device), actions.to(self.device), masks.to(self.device))
-                loss = self.loss_fn(style_vector, labels=player_ids.to(self.device))
-    
+
+                support_z = self.encoder(support_pos, support_act, support_mask)  # [N*K, d]
+
+                # 聚合每类的原型（取均值）
+                N = support_labels.max().item() + 1
+                prototypes = []
+                for i in range(N):
+                    class_mask = (support_labels == i)
+                    if class_mask.sum() == 0:
+                        continue
+                    proto = support_z[class_mask].mean(dim=0)
+                    prototypes.append(proto)
+                prototypes = torch.stack(prototypes)  # [N, d]
+
+                query_z = self.encoder(query_pos, query_act, query_mask)  # [N*Q, d]
+
+                logits = -torch.cdist(query_z, prototypes)  # [N*Q, N]
+                loss = F.cross_entropy(logits, query_labels)
+
                 if torch.isnan(loss):
                     print("❌ Loss is NaN!")
-                    print("player_ids:", player_ids.tolist())
-                    print("style_vector:", style_vector)
-                    print("Any NaN in style_vector?", torch.isnan(style_vector).any().item())
-                    print("Any Inf in style_vector?", torch.isinf(style_vector).any().item())
+                    print("support_labels:", support_labels.tolist())
+                    print("query_labels:", query_labels.tolist())
                     exit()
-    
+
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-    
+
                 total_loss += loss.item()
                 print(f"  ├─ Batch {batch_count} Loss: {loss.item():.4f}")
 
+            avg_loss = total_loss / batch_count
             avg_val_loss = self.val()
 
-            avg_loss = total_loss / batch_count
-            print(f"✅ [Epoch {epoch+1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss}")
+            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss}")
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
@@ -189,10 +187,10 @@ class EncoderTrainer:
                     'avg_loss': avg_loss,
                 }, f"{save_path}/player_encoder_{epoch + 1}.pt")
                 print(f"📦 Model saved to {save_path}")
-            
+
             if (epoch + 1) % 10 == 0:
                 self.visualize_embeddings("./demo.png", "./demo_tsne.png")
-            
+
     def load_model(self, model_path):
         if os.path.exists(model_path):
             d = torch.load(model_path)
@@ -230,22 +228,18 @@ class EncoderTrainer:
         plt.legend(title="Player ID", bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
 
-        return plt\
-
+        return plt
+    
     def visualize_embeddings_pca(self, embeddings, labels):
-        # self.encoder.eval()
         print("🔍 Running PCA...")
         pca = PCA(n_components=2, random_state=42)
         embeddings_2d = pca.fit_transform(embeddings)
 
-        # jitter = np.random.normal(0, 0.1, embeddings_2d.shape)
-        # embeddings_2d += jitter
-    
         # 可视化 scatter plot
         plt.figure(figsize=(16, 8))
         num_classes = len(set(labels))
         palette = sns.husl_palette(num_classes)
-    
+
         sns.scatterplot(
             x=embeddings_2d[:, 0],
             y=embeddings_2d[:, 1],
@@ -255,15 +249,15 @@ class EncoderTrainer:
             s=50,
             alpha=0.6
         )
-    
+
         plt.title("PCA Visualization of Style Embeddings")
         plt.xlabel("PC 1")
         plt.ylabel("PC 2")
         plt.legend(title="Player ID", bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
-    
+
         return plt
-            
+
     def visualize_embeddings(self, pca_path, tsne_path):
         with torch.no_grad():
             for states, actions, masks, player_ids in self.test_loader:
@@ -279,51 +273,47 @@ class EncoderTrainer:
 
         print(f"📊 Visualizing {len(labels)} samples across {len(set(labels))} players")
         plt = self.visualize_embeddings_pca(embeddings, labels)
-        
+
         plt.savefig(pca_path, dpi=300)
-        
+
         plt = self.visualize_embeddings_tsne(embeddings, labels)
         plt.savefig(tsne_path, dpi=300)
+
 
 def load_dataset_file(path):
     with open(f"chess_data_parse/{path}.json", "r", encoding="utf-8") as f:
         return json.load(f)
-        
+
+
 if __name__ == '__main__':
     max_len = 100
 
-    train_dataset = PlayerDataset(load_dataset_file("train_players"), games_per_player=8, max_len=max_len)
+    train_dataset = MetaStyleDataset(load_dataset_file("train_players"))
 
     train_loader = DataLoader(train_dataset,
-                             batch_size=16,
-                             shuffle=True,
-                             collate_fn=flatten_collate,
-                             num_workers=16,
-                             pin_memory=True,
-                             worker_init_fn=worker_init_fn
-                             )
-
-    val_dataset = PlayerDataset(load_dataset_file("val_players"), games_per_player=8, max_len=max_len)
-
-    val_loader = DataLoader(val_dataset,
                               batch_size=16,
                               shuffle=True,
-                              collate_fn=flatten_collate,
                               num_workers=16,
-                              pin_memory=True,
-                              worker_init_fn=worker_init_fn
+                              pin_memory=True
                               )
 
-    test_dataset = PlayerDataset(load_dataset_file("test_players"), games_per_player=8, max_len=max_len)
+    val_dataset = MetaStyleDataset(load_dataset_file("val_players"))
 
-    test_loader = DataLoader(test_dataset,
+    val_loader = DataLoader(val_dataset,
                             batch_size=16,
                             shuffle=True,
-                            collate_fn=flatten_collate,
                             num_workers=16,
                             pin_memory=True,
-                            worker_init_fn=worker_init_fn
                             )
+
+    test_dataset = MetaStyleDataset(load_dataset_file("test_players"))
+
+    test_loader = DataLoader(test_dataset,
+                             batch_size=16,
+                             shuffle=True,
+                             num_workers=16,
+                             pin_memory=True,
+                             )
 
     trainer = EncoderTrainer(train_loader, val_loader, test_loader, max_len=max_len)
 
