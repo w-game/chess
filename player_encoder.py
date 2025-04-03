@@ -102,7 +102,7 @@ class EncoderTrainer:
         self.test_loader = test_loader
 
         self.encoder = TransformerEncoder(
-            cnn_in_channels=112, action_size=1858,
+            cnn_in_channels=224, action_size=1858,
             state_embed_dim=256, action_embed_dim=256, fusion_out_dim=256,
             transformer_d_model=256, num_heads=8, num_layers=4,
             dropout=0.1, max_seq_len=max_len
@@ -133,15 +133,13 @@ class EncoderTrainer:
             for batch in self.train_loader:
                 batch_count += 1
 
-                support_pos = batch['support_pos'].to(self.device)
-                support_mask = batch['support_mask'].to(self.device)
-                support_labels = batch['support_labels'].to(self.device)
+                support_pos = batch['support_pos'].to(self.device).squeeze(0)
+                support_mask = batch['support_mask'].to(self.device).squeeze(0)
+                support_labels = batch['support_labels'].to(self.device).squeeze(0)
 
-                query_pos = batch['query_pos'].to(self.device)
-                query_mask = batch['query_mask'].to(self.device)
-                query_labels = batch['query_labels'].to(self.device)
-
-                print(support_pos.shape)
+                query_pos = batch['query_pos'].to(self.device).squeeze(0)
+                query_mask = batch['query_mask'].to(self.device).squeeze(0)
+                query_labels = batch['query_labels'].to(self.device).squeeze(0)
 
                 support_z = self.encoder(support_pos, support_mask)  # [N*K, d]
 
@@ -156,7 +154,7 @@ class EncoderTrainer:
                     prototypes.append(proto)
                 prototypes = torch.stack(prototypes)  # [N, d]
 
-                query_z = self.encoder(query_pos, query_act, query_mask)  # [N*Q, d]
+                query_z = self.encoder(query_pos, query_mask)  # [N*Q, d]
 
                 logits = -torch.cdist(query_z, prototypes)  # [N*Q, N]
                 loss = F.cross_entropy(logits, query_labels)

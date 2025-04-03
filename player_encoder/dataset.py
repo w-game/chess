@@ -22,7 +22,7 @@ class MetaStyleDataset(Dataset):
         states, masks, labels = [], [], []
         for (s, m, _) in sub_games:
             s = pad_or_truncate(s, self.max_len, dim=0)  # s: [T, 224, 8, 8]
-            m = pad_or_truncate(m, self.max_len, pad_value=1, dim=0)  # m: [T]
+            m = pad_or_truncate(m, self.max_len, pad_value=True, dim=0)  # m: [T]
             states.append(s)
             masks.append(m)
             labels.append(label_id)
@@ -145,7 +145,7 @@ class PlayerDataset(Dataset):
                 states = game['states']  # [T, 112, 8, 8]
                 # actions = game['actions']  # [T]
                 T = states.size(0)
-                mask = torch.zeros(T, device=states.device)
+                mask = torch.zeros(T, dtype=torch.bool)
 
                 paired_states = []
                 paired_mask = []

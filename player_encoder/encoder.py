@@ -99,15 +99,14 @@ class TransformerEncoder(nn.Module):
         token_embeddings = self.pos_encoder(state_emb)
 
         # Transformer 编码
-        print(mask)
         transformer_output = self.transformer_encoder(
-            token_embeddings, src_key_padding_mask=~mask
+            token_embeddings, src_key_padding_mask=mask
         )
 
         # 序列池化（聚合）
         if mask is not None:
             # False 表示有效位置
-            valid_mask = (~mask).unsqueeze(-1).float()  # [batch, seq_len, 1]
+            valid_mask = mask.unsqueeze(-1).float()  # [batch, seq_len, 1]
             transformer_output = transformer_output * valid_mask
             valid_counts = valid_mask.sum(dim=1)
             pooled = transformer_output.sum(dim=1)
