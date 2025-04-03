@@ -1,21 +1,19 @@
-import torch
-import torch.nn as nn
+import json
+import os
+import random
+from collections import defaultdict
 
-from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-from player_encoder.encoder import TransformerEncoder
-from player_encoder.dataset import PlayerDataset, MetaStyleDataset
-
-from sklearn.decomposition import PCA
-import json
-
-import os
-
-from torch.utils.data import DataLoader
-import multiprocessing as mp
+import torch
+import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from torch.utils.data import DataLoader
+
+from player_encoder.dataset import MetaStyleDataset
+from player_encoder.encoder import TransformerEncoder
 
 
 class SupConLoss(nn.Module):
@@ -109,20 +107,50 @@ class EncoderTrainer:
         ).to(self.device)
         self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
 
+    def unpack_batch(self, batch):
+        return (
+            batch['support_pos'].to(self.device).squeeze(0),
+            batch['support_mask'].to(self.device).squeeze(0),
+            batch['support_labels'].to(self.device).squeeze(0),
+            batch['query_pos'].to(self.device).squeeze(0),
+            batch['query_mask'].to(self.device).squeeze(0),
+            batch['query_labels'].to(self.device).squeeze(0)
+        )
+
+    def get_prototypes(self, support_pos, support_mask, support_labels):
+        support_z = self.encoder(support_pos, support_mask)
+        N = support_labels.max().item() + 1
+        prototypes = [
+            support_z[support_labels == i].mean(dim=0)
+            for i in range(N)
+            if (support_labels == i).sum() > 0
+        ]
+        return torch.stack(prototypes)
+
+    def proto_loss(self, query_pos, query_mask, prototypes, query_labels):
+        query_z = self.encoder(query_pos, query_mask)
+        logits = -torch.cdist(query_z, prototypes)
+        return F.cross_entropy(logits, query_labels)
+
     @torch.no_grad()
     def val(self):
         total_loss = 0
         batch_count = 0
-        for states, actions, masks, player_ids in self.val_loader:
+        for batch in self.val_loader:
             batch_count += 1
-            style_vector = self.encoder(states.to(self.device), actions.to(self.device), masks.to(self.device))
-            loss = self.loss_fn(style_vector, labels=player_ids.to(self.device))
+
+            support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
+            prototypes = self.get_prototypes(support_pos, support_mask, support_labels)
+            loss = self.proto_loss(query_pos, query_mask, prototypes, query_labels)
 
             total_loss += loss.item()
 
         return total_loss / batch_count
 
     def train(self, epochs=60, save_path="./models"):
+        train_losses = []
+        val_losses = []
+
         for epoch in range(epochs):
             self.encoder.train()
             total_loss = 0
@@ -133,31 +161,9 @@ class EncoderTrainer:
             for batch in self.train_loader:
                 batch_count += 1
 
-                support_pos = batch['support_pos'].to(self.device).squeeze(0)
-                support_mask = batch['support_mask'].to(self.device).squeeze(0)
-                support_labels = batch['support_labels'].to(self.device).squeeze(0)
-
-                query_pos = batch['query_pos'].to(self.device).squeeze(0)
-                query_mask = batch['query_mask'].to(self.device).squeeze(0)
-                query_labels = batch['query_labels'].to(self.device).squeeze(0)
-
-                support_z = self.encoder(support_pos, support_mask)  # [N*K, d]
-
-                # 聚合每类的原型（取均值）
-                N = support_labels.max().item() + 1
-                prototypes = []
-                for i in range(N):
-                    class_mask = (support_labels == i)
-                    if class_mask.sum() == 0:
-                        continue
-                    proto = support_z[class_mask].mean(dim=0)
-                    prototypes.append(proto)
-                prototypes = torch.stack(prototypes)  # [N, d]
-
-                query_z = self.encoder(query_pos, query_mask)  # [N*Q, d]
-
-                logits = -torch.cdist(query_z, prototypes)  # [N*Q, N]
-                loss = F.cross_entropy(logits, query_labels)
+                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
+                prototypes = self.get_prototypes(support_pos, support_mask, support_labels)
+                loss = self.proto_loss(query_pos, query_mask, prototypes, query_labels)
 
                 if torch.isnan(loss):
                     print("❌ Loss is NaN!")
@@ -175,6 +181,9 @@ class EncoderTrainer:
             avg_loss = total_loss / batch_count
             avg_val_loss = self.val()
 
+            train_losses.append(avg_loss)
+            val_losses.append(avg_val_loss)
+
             print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss}")
 
             if (epoch + 1) % 2 == 0:
@@ -187,7 +196,24 @@ class EncoderTrainer:
                 print(f"📦 Model saved to {save_path}")
 
             if (epoch + 1) % 10 == 0:
-                self.visualize_embeddings("./demo.png", "./demo_tsne.png")
+                trainer.style_consistency_analysis(
+                    num_trials=50,
+                    support_size=5,
+                    save_path="./style_consistency.png"
+                )
+
+        # 绘制 loss 曲线图
+        plt.figure(figsize=(10, 5))
+        plt.plot(train_losses, label="Train Loss")
+        plt.plot(val_losses, label="Val Loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.title("Training & Validation Loss Curve")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(f"{save_path}/loss_curve.png")
+        print(f"📉 Loss curve saved to {save_path}/loss_curve.png")
 
     def load_model(self, model_path):
         if os.path.exists(model_path):
@@ -199,83 +225,51 @@ class EncoderTrainer:
             #     param_group['lr'] = 0.0001
             print(f"load model from {model_path}")
 
-    def visualize_embeddings_tsne(self, embeddings, labels):
-        print("🔍 Running t-SNE...")
-        tsne = TSNE(n_components=2, random_state=42)
-        embeddings_2d = tsne.fit_transform(embeddings)
-        print(embeddings_2d.shape)  # (N, 2)
+    def style_consistency_analysis(self, num_trials=50, support_size=5, save_path="./style_consistency.png"):
+        self.encoder.eval()
+        results = defaultdict(list)
 
-        # 可视化 scatter plot
-        plt.figure(figsize=(16, 8))
-        num_classes = len(set(labels))
-        palette = sns.husl_palette(num_classes)
-
-        sns.scatterplot(
-            x=embeddings_2d[:, 0],
-            y=embeddings_2d[:, 1],
-            hue=labels,
-            palette=palette,
-            legend="full",
-            s=50,
-            alpha=0.6
-        )
-
-        plt.title("t-SNE Visualization of Style Embeddings")
-        plt.xlabel("Dimension 1")
-        plt.ylabel("Dimension 2")
-        plt.legend(title="Player ID", bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-
-        return plt
-    
-    def visualize_embeddings_pca(self, embeddings, labels):
-        print("🔍 Running PCA...")
-        pca = PCA(n_components=2, random_state=42)
-        embeddings_2d = pca.fit_transform(embeddings)
-
-        # 可视化 scatter plot
-        plt.figure(figsize=(16, 8))
-        num_classes = len(set(labels))
-        palette = sns.husl_palette(num_classes)
-
-        sns.scatterplot(
-            x=embeddings_2d[:, 0],
-            y=embeddings_2d[:, 1],
-            hue=labels,
-            palette=palette,
-            legend="full",
-            s=50,
-            alpha=0.6
-        )
-
-        plt.title("PCA Visualization of Style Embeddings")
-        plt.xlabel("PC 1")
-        plt.ylabel("PC 2")
-        plt.legend(title="Player ID", bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-
-        return plt
-
-    def visualize_embeddings(self, pca_path, tsne_path):
         with torch.no_grad():
-            for states, actions, masks, player_ids in self.test_loader:
-                style_vector = self.encoder(states.to(self.device), actions.to(self.device), masks.to(self.device))
-                loss = self.loss_fn(style_vector, labels=player_ids.to(self.device))
-                print(f"{loss.item()}")
-                break
-                # if loss.item() < 3.6:
-                #     break
+            for trial in range(num_trials):
+                # 从测试集随机选一个 batch（即一名玩家的数据）
+                batch = next(iter(self.test_loader))
+                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
 
-        labels = player_ids.numpy().tolist()  # list
-        embeddings = style_vector.cpu().numpy()
+                unique_ids = support_labels.unique()
+                for player_id in unique_ids:
+                    indices = (support_labels == player_id).nonzero(as_tuple=True)[0].tolist()
+                    if len(indices) <= support_size:
+                        continue
 
-        print(f"📊 Visualizing {len(labels)} samples across {len(set(labels))} players")
-        plt = self.visualize_embeddings_pca(embeddings, labels)
+                    sampled_indices = random.sample(indices, support_size + 1)
+                    support_idx = sampled_indices[:support_size]
+                    query_idx = sampled_indices[-1:]
 
-        plt.savefig(pca_path, dpi=300)
+                    support_p = support_pos[support_idx]
+                    support_m = support_mask[support_idx]
+                    query_p = support_pos[query_idx]
+                    query_m = support_mask[query_idx]
 
-        plt = self.visualize_embeddings_tsne(embeddings, labels)
-        plt.savefig(tsne_path, dpi=300)
+                    # 构造原型
+                    support_z = self.encoder(support_p, support_m)
+                    proto = support_z.mean(dim=0, keepdim=True)  # [1, D]
+
+                    # 新棋谱编码
+                    query_z = self.encoder(query_p, query_m)  # [1, D]
+                    dist = torch.norm(query_z - proto, dim=1).item()
+                    results[player_id.item()].append(dist)
+
+        # 可视化柱状图
+        plt.figure(figsize=(10, 5))
+        sorted_ids = sorted(results.keys())
+        avg_dists = [sum(results[k]) / len(results[k]) for k in sorted_ids]
+        plt.bar([f"Player {k}" for k in sorted_ids], avg_dists)
+        plt.ylabel("Avg Distance to Prototype")
+        plt.title(f"Style Consistency Check (Each player: {num_trials} trials, Support size: {support_size})")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(save_path)
+        print(f"📊 Style consistency chart saved to {save_path}")
 
 
 def load_dataset_file(path):
