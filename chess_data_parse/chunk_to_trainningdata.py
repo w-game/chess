@@ -54,7 +54,7 @@ def parse_record(record):
     assert -1.0 <= best_q <= 1.0 and 0.0 <= best_d <= 1.0
     best_q = struct.pack('fff', best_q_w, best_d, best_q_l)
 
-    return (planes, probs, winner, best_q, stm)
+    return planes, probs, winner, best_q
 
 
 def sample_record(chunkdata):
@@ -106,7 +106,7 @@ def get_latest_chunks(path):
 
 
 def byte_to_np(record):
-    planes, probs, winner, best_q, stm = parse_record(record)
+    planes, probs, winner, best_q = parse_record(record)
 
     planes = np.frombuffer(planes, dtype=np.float32).reshape(112, 8, 8)  # 将字节流转换回 np.array
     probs = np.frombuffer(probs, dtype=np.float32)  # 将字节流转换回 np.array
@@ -142,7 +142,7 @@ def chunk_to_trainingdata(player_name):
         matching_indices = []
 
         for i, record in enumerate(records):
-            planes, probs, winner, best_q, stm = byte_to_np(record)
+            planes, probs, winner, best_q = byte_to_np(record)
 
             for j in range(12):
                 if not np.allclose(planes[j], first_planes[j]):
@@ -164,7 +164,7 @@ def chunk_to_trainingdata(player_name):
             states, actions = [], []
 
             for record in game_records:
-                planes, probs, winner, best_q, stm = byte_to_np(record)
+                planes, probs, winner, best_q = byte_to_np(record)
 
                 states.append(torch.tensor(planes, dtype=torch.float16))
                 actions.append(torch.tensor(probs, dtype=torch.float16))

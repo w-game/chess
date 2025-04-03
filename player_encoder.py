@@ -316,6 +316,6 @@ if __name__ == '__main__':
     save_path = "./models/model_0"
     os.makedirs(save_path, exist_ok=True)
 
-    trainer.load_model(f"{save_path}/player_encoder_2.pt")
+    trainer.load_model(f"{save_path}/player_encoder_4.pt")
 
     trainer.train(save_path=save_path)
