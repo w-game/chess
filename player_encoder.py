@@ -280,6 +280,7 @@ def load_dataset_file(path):
 
 if __name__ == '__main__':
     max_len = 100
+    num_workers = 8
 
     train_dataset = MetaStyleDataset(load_dataset_file("train_players"), max_len=max_len)
 
@@ -287,7 +288,7 @@ if __name__ == '__main__':
                               batch_size=1,
                               shuffle=True,
                               pin_memory=True,
-                              num_workers=4,
+                              num_workers=num_workers,
                               persistent_workers=True
                               )
 
@@ -297,7 +298,7 @@ if __name__ == '__main__':
                             batch_size=1,
                             shuffle=True,
                             pin_memory=True,
-                            num_workers=4,
+                            num_workers=num_workers,
                             persistent_workers=True
                             )
 
@@ -307,7 +308,7 @@ if __name__ == '__main__':
                             batch_size=1,
                             shuffle=True,
                             pin_memory=True,
-                            num_workers=4,
+                            num_workers=num_workers,
                             persistent_workers=True
                              )
 
