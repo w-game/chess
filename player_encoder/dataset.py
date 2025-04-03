@@ -36,7 +36,7 @@ class MetaStyleDataset(Dataset):
         query_pos, query_mask, query_labels = [], [], []
 
         for label_id, pid in enumerate(sampled_ids):
-            games = self.player_dataset.get_player_data_by_id(pid)
+            games = self.player_dataset.get_player_data_by_id(pid, self.K + self.Q)
             random.shuffle(games)
 
             assert len(games) >= self.K + self.Q, f"玩家 {pid} 样本不够"
@@ -128,19 +128,23 @@ class PlayerDataset(Dataset):
 
         return segments
 
-    def get_player_data_by_id(self, player_id):
+    def get_player_data_by_id(self, player_id, game_num):
         file_path = self.player_files[player_id]
         games = torch.load(file_path, weights_only=True)
 
-        white_game_list = games["white"]
-        black_game_list = games["black"]
+        white_game_list = list({id(g['states']): g for g in games["white"]}.values())
+        black_game_list = list({id(g['states']): g for g in games["black"]}.values())
 
-        white_game_list = list({id(g['states']): g for g in white_game_list}.values())
-        black_game_list = list({id(g['states']): g for g in black_game_list}.values())
+        random.shuffle(white_game_list)
+        random.shuffle(black_game_list)
+
+        num_white = game_num // 2
+        num_black = game_num - num_white
 
         processed = []
         for color, games in zip(['white', 'black'], [white_game_list, black_game_list]):
-            for game in games:
+            selected_games = games[:num_white if color == 'white' else num_black]
+            for game in selected_games:
                 states = game['states']  # [T, 112, 8, 8]
                 # actions = game['actions']  # [T]
                 T = states.size(0)
@@ -154,10 +158,10 @@ class PlayerDataset(Dataset):
                 else:
                     indices = range(1, T - 1, 2)  # 黑方下在奇数步
 
-                for i in indices:
+                for idx, i in enumerate(indices):
                     s_t = states[i]
                     s_tp1 = states[i + 1]
-                    s_pair = torch.cat([s_t, s_tp1], dim=0)  # [224, 8, 8]
+                    s_pair = torch.cat([s_t, s_tp1], dim=0).half()  # 压缩为 float16
                     paired_states.append(s_pair)
                     paired_mask.append(mask[i])
 
@@ -165,7 +169,7 @@ class PlayerDataset(Dataset):
                     continue
 
                 paired_states = torch.stack(paired_states)  # [T', 224, 8, 8]
-                paired_mask = torch.tensor(paired_mask)  # [T']
+                paired_mask = torch.tensor(paired_mask, dtype=torch.bool)  # [T']
 
                 processed.append((paired_states, paired_mask, int(player_id)))
 
