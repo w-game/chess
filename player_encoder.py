@@ -161,7 +161,8 @@ class EncoderTrainer:
             for batch in self.train_loader:
                 batch_count += 1
 
-                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
+                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
+                    batch)
                 prototypes = self.get_prototypes(support_pos, support_mask, support_labels)
                 loss = self.proto_loss(query_pos, query_mask, prototypes, query_labels)
 
@@ -176,16 +177,16 @@ class EncoderTrainer:
                 self.optimizer.step()
 
                 total_loss += loss.item()
-                print(f"  ├─ Batch {batch_count} Loss: {loss.item():.4f}")
+                if (epoch + 1) % 20 == 0:
+                    print(f"  ├─ Batch {batch_count} Loss: {loss.item():.4f}")
 
             avg_loss = total_loss / batch_count
             avg_val_loss = self.val()
 
             train_losses.append(avg_loss)
             val_losses.append(avg_val_loss)
-            
-            if (epoch + 1) % 20 == 0:
-                print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}")
+
+            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}")
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
@@ -235,7 +236,8 @@ class EncoderTrainer:
             for trial in range(num_trials):
                 # 从测试集随机选一个 batch（即一名玩家的数据）
                 batch = next(iter(self.test_loader))
-                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
+                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
+                    batch)
 
                 unique_ids = support_labels.unique()
                 for player_id in unique_ids:

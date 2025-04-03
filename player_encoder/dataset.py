@@ -7,25 +7,6 @@ import torch
 from torch.utils.data import Dataset
 
 
-class LRUCache:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.cache = OrderedDict()
-
-    def get(self, key):
-        if key not in self.cache:
-            return None
-        self.cache.move_to_end(key)
-        return self.cache[key]
-
-    def put(self, key, value):
-        if key in self.cache:
-            self.cache.move_to_end(key)
-        self.cache[key] = value
-        if len(self.cache) > self.capacity:
-            self.cache.popitem(last=False)
-
-
 class MetaStyleDataset(Dataset):
     def __init__(self, player_files, N=5, K=5, Q=5, max_len=100):
         self.player_dataset = PlayerDataset(player_files)
@@ -109,7 +90,6 @@ class PlayerDataset(Dataset):
         self.player_files = player_files  # {player_id: file_path}
         self.player_ids = list(player_files.keys())  # 所有玩家ID列表
         self.transform = transform
-        self.data_cache = LRUCache(capacity=32)  # 限制最大缓存数量
 
     def __len__(self):
         return len(self.player_ids)
@@ -149,10 +129,6 @@ class PlayerDataset(Dataset):
         return segments
 
     def get_player_data_by_id(self, player_id):
-        cached = self.data_cache.get(player_id)
-        if cached is not None:
-            return cached
-
         file_path = self.player_files[player_id]
         games = torch.load(file_path, weights_only=True)
 
@@ -193,7 +169,6 @@ class PlayerDataset(Dataset):
 
                 processed.append((paired_states, paired_mask, int(player_id)))
 
-        self.data_cache.put(player_id, processed)
         return processed  # List[(state, action, mask, player_id)]
 
     def __getitem__(self, index):
