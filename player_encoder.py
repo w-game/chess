@@ -286,7 +286,9 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset,
                               batch_size=1,
                               shuffle=True,
-                              pin_memory=True
+                              pin_memory=True,
+                              num_workers=4,
+                              persistent_workers=True
                               )
 
     val_dataset = MetaStyleDataset(load_dataset_file("val_players"), max_len=max_len)
@@ -294,15 +296,19 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset,
                             batch_size=1,
                             shuffle=True,
-                            pin_memory=True
+                            pin_memory=True,
+                            num_workers=4,
+                            persistent_workers=True
                             )
 
     test_dataset = MetaStyleDataset(load_dataset_file("test_players"), max_len=max_len)
 
     test_loader = DataLoader(test_dataset,
-                             batch_size=1,
-                             shuffle=True,
-                             pin_memory=True
+                            batch_size=1,
+                            shuffle=True,
+                            pin_memory=True,
+                            num_workers=4,
+                            persistent_workers=True
                              )
 
     trainer = EncoderTrainer(train_loader, val_loader, test_loader, max_len=max_len)

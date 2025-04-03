@@ -4,6 +4,7 @@ import subprocess
 import os
 from glob import glob
 from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import torch
 from torch.utils.data import Dataset
@@ -137,12 +138,18 @@ class PlayerDataset(Dataset):
 
         selected_files = game_files[:game_num]
 
-        # 使用多进程池并行处理文件
-        with Pool(processes=min(cpu_count(), len(selected_files))) as pool:
-            results = pool.map(process_file, selected_files)
-
-        # 过滤掉无效结果（返回 None 的文件）
-        processed = [(states, mask, int(player_id)) for (states, mask) in results if states is not None]
+        # 使用线程池并行处理文件
+        processed = []
+        with ThreadPoolExecutor(max_workers=min(cpu_count(), len(selected_files))) as executor:
+            future_to_file = {executor.submit(process_file, file): file for file in selected_files}
+            for future in as_completed(future_to_file):
+                try:
+                    result = future.result()
+                    if result is not None:
+                        states, mask = result
+                        processed.append((states, mask, int(player_id)))
+                except Exception as e:
+                    print(f"Error processing file {future_to_file[future]}: {e}")
 
         return processed
 
