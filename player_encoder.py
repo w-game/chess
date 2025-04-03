@@ -131,19 +131,19 @@ class EncoderTrainer:
             print(f"\n🟢 Epoch {epoch + 1}/{epochs} started...")
 
             for batch in self.train_loader:
+                batch_count += 1
+
                 support_pos = batch['support_pos'].to(self.device)
-                support_act = batch['support_act'].to(self.device)
                 support_mask = batch['support_mask'].to(self.device)
                 support_labels = batch['support_labels'].to(self.device)
 
                 query_pos = batch['query_pos'].to(self.device)
-                query_act = batch['query_act'].to(self.device)
                 query_mask = batch['query_mask'].to(self.device)
                 query_labels = batch['query_labels'].to(self.device)
 
-                batch_count += 1
+                print(support_pos.shape)
 
-                support_z = self.encoder(support_pos, support_act, support_mask)  # [N*K, d]
+                support_z = self.encoder(support_pos, support_mask)  # [N*K, d]
 
                 # 聚合每类的原型（取均值）
                 N = support_labels.max().item() + 1
@@ -288,28 +288,28 @@ def load_dataset_file(path):
 if __name__ == '__main__':
     max_len = 100
 
-    train_dataset = MetaStyleDataset(load_dataset_file("train_players"))
+    train_dataset = MetaStyleDataset(load_dataset_file("train_players"), max_len=max_len)
 
     train_loader = DataLoader(train_dataset,
-                              batch_size=16,
+                              batch_size=1,
                               shuffle=True,
                               num_workers=16,
                               pin_memory=True
                               )
 
-    val_dataset = MetaStyleDataset(load_dataset_file("val_players"))
+    val_dataset = MetaStyleDataset(load_dataset_file("val_players"), max_len=max_len)
 
     val_loader = DataLoader(val_dataset,
-                            batch_size=16,
+                            batch_size=1,
                             shuffle=True,
                             num_workers=16,
                             pin_memory=True,
                             )
 
-    test_dataset = MetaStyleDataset(load_dataset_file("test_players"))
+    test_dataset = MetaStyleDataset(load_dataset_file("test_players"), max_len=max_len)
 
     test_loader = DataLoader(test_dataset,
-                             batch_size=16,
+                             batch_size=1,
                              shuffle=True,
                              num_workers=16,
                              pin_memory=True,

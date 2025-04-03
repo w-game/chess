@@ -99,6 +99,7 @@ class TransformerEncoder(nn.Module):
         token_embeddings = self.pos_encoder(state_emb)
 
         # Transformer 编码
+        print(mask)
         transformer_output = self.transformer_encoder(
             token_embeddings, src_key_padding_mask=~mask
         )

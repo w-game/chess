@@ -8,23 +8,35 @@ import subprocess
 
 
 class MetaStyleDataset(Dataset):
-    def __init__(self, player_files, N=5, K=5, Q=5):
+    def __init__(self, player_files, N=5, K=5, Q=5, max_len=100):
         self.player_dataset = PlayerDataset(player_files)
         self.N = N
         self.K = K
         self.Q = Q
+        self.max_len = max_len
 
     def __len__(self):
-        return 10000
+        return 1000
+
+    def set_creator(self, sub_games, label_id):
+        states, masks, labels = [], [], []
+        for (s, m, _) in sub_games:
+            s = pad_or_truncate(s, self.max_len, dim=0)  # s: [T, 224, 8, 8]
+            m = pad_or_truncate(m, self.max_len, pad_value=1, dim=0)  # m: [T]
+            states.append(s)
+            masks.append(m)
+            labels.append(label_id)
+
+        return states, masks, labels
 
     def __getitem__(self, index):
         sampled_ids = random.sample(self.player_dataset.player_ids, self.N)
 
-        support_pos, support_act, support_mask, support_labels = [], [], [], []
-        query_pos, query_act, query_mask, query_labels = [], [], [], []
+        support_pos, support_mask, support_labels = [], [], []
+        query_pos, query_mask, query_labels = [], [], []
 
         for label_id, pid in enumerate(sampled_ids):
-            games = self.player_dataset[pid]
+            games = self.player_dataset.get_player_data_by_id(pid)
             random.shuffle(games)
 
             assert len(games) >= self.K + self.Q, f"玩家 {pid} 样本不够"
@@ -32,29 +44,41 @@ class MetaStyleDataset(Dataset):
             support_games = games[:self.K]
             query_games = games[self.K:self.K + self.Q]
 
-            for (s, a, m, _) in support_games:
-                support_pos.append(s)
-                support_act.append(a)
-                support_mask.append(m)
-                support_labels.append(label_id)
+            states, masks, labels = self.set_creator(support_games, label_id)
+            support_pos.extend(states)
+            support_mask.extend(masks)
+            support_labels.extend(labels)
 
-            for (s, a, m, _) in query_games:
-                query_pos.append(s)
-                query_act.append(a)
-                query_mask.append(m)
-                query_labels.append(label_id)
+            states, masks, labels = self.set_creator(query_games, label_id)
+            query_pos.extend(states)
+            query_mask.extend(masks)
+            query_labels.extend(labels)
 
         return {
             'support_pos': torch.stack(support_pos),  # [N*K, T, 112, 8, 8]
-            'support_act': torch.stack(support_act),
             'support_mask': torch.stack(support_mask),
             'support_labels': torch.tensor(support_labels),
 
             'query_pos': torch.stack(query_pos),  # [N*Q, T, 112, 8, 8]
-            'query_act': torch.stack(query_act),
             'query_mask': torch.stack(query_mask),
             'query_labels': torch.tensor(query_labels),
         }
+
+
+def pad_or_truncate(tensor, target_len, pad_value=0, dim=0):
+    """
+    自动补全/截断 tensor 到 target_len
+    """
+    T = tensor.size(dim)
+    if T == target_len:
+        return tensor
+    elif T > target_len:
+        return tensor.narrow(dim, 0, target_len)
+    else:
+        pad_size = list(tensor.shape)
+        pad_size[dim] = target_len - T
+        pad_tensor = torch.full(pad_size, pad_value, dtype=tensor.dtype, device=tensor.device)
+        return torch.cat([tensor, pad_tensor], dim=dim)
 
 
 class PlayerDataset(Dataset):
@@ -69,21 +93,6 @@ class PlayerDataset(Dataset):
 
     def __len__(self):
         return len(self.player_ids)
-
-    def pad_or_truncate(self, tensor, target_len, pad_value=0, dim=0):
-        """
-        自动补全/截断 tensor 到 target_len
-        """
-        T = tensor.size(dim)
-        if T == target_len:
-            return tensor
-        elif T > target_len:
-            return tensor.narrow(dim, 0, target_len)
-        else:
-            pad_size = list(tensor.shape)
-            pad_size[dim] = target_len - T
-            pad_tensor = torch.full(pad_size, pad_value, dtype=tensor.dtype, device=tensor.device)
-            return torch.cat([tensor, pad_tensor], dim=dim)
 
     def extract_segments_from_game(self, state, action, mask, num_segments=3, segment_len=30):
         """
@@ -119,9 +128,7 @@ class PlayerDataset(Dataset):
 
         return segments
 
-    def __getitem__(self, index):
-        player_id = self.player_ids[index]
-
+    def get_player_data_by_id(self, player_id):
         file_path = self.player_files[player_id]
 
         games = torch.load(file_path, weights_only=True)
@@ -159,11 +166,17 @@ class PlayerDataset(Dataset):
                     continue
 
                 paired_states = torch.stack(paired_states)  # [T', 224, 8, 8]
-                paired_mask = torch.tensor(paired_mask)     # [T']
+                paired_mask = torch.tensor(paired_mask)  # [T']
 
                 processed.append((paired_states, paired_mask, int(player_id)))
 
         return processed  # List[(state, action, mask, player_id)]
+
+    def __getitem__(self, index):
+        player_id = self.player_ids[index]
+
+        return self.get_player_data_by_id(player_id)
+
 
 
 def lc0_eval_fens(fens, lc0_path="lc0", weights_path="your_network.pb.gz"):

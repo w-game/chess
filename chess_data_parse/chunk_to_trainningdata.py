@@ -144,6 +144,9 @@ def chunk_to_records(chunk_file_lst):
 
 def chunk_to_trainingdata(player_name):
     whites, blacks = get_latest_chunks(f"./players/{player_name}")
+    if whites is None or blacks is None:
+        return
+
     white_records = chunk_to_records(whites)
     black_records = chunk_to_records(blacks)
 
