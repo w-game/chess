@@ -1,10 +1,11 @@
 import json
 import random
-import time
-from collections import OrderedDict
-from torch.utils.data import Dataset
-import torch
 import subprocess
+from collections import OrderedDict
+
+import torch
+from torch.utils.data import Dataset
+
 
 class LRUCache:
     def __init__(self, capacity):
@@ -108,7 +109,7 @@ class PlayerDataset(Dataset):
         self.player_files = player_files  # {player_id: file_path}
         self.player_ids = list(player_files.keys())  # 所有玩家ID列表
         self.transform = transform
-        self.data_cache = LRUCache(capacity=100)  # 限制最大缓存数量
+        self.data_cache = LRUCache(capacity=32)  # 限制最大缓存数量
 
     def __len__(self):
         return len(self.player_ids)
