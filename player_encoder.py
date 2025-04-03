@@ -286,7 +286,6 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset,
                               batch_size=1,
                               shuffle=True,
-                              num_workers=8,
                               pin_memory=True,
                               persistent_workers=True
                               )
@@ -296,7 +295,6 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset,
                             batch_size=1,
                             shuffle=True,
-                            num_workers=8,
                             pin_memory=True,
                             persistent_workers=True
                             )
@@ -306,7 +304,6 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_dataset,
                              batch_size=1,
                              shuffle=True,
-                             num_workers=8,
                              pin_memory=True,
                              persistent_workers=True
                              )

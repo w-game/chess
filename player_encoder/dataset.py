@@ -3,7 +3,7 @@ import random
 import subprocess
 import os
 from glob import glob
-from collections import OrderedDict
+from multiprocessing import Pool, cpu_count
 
 import torch
 from torch.utils.data import Dataset
@@ -136,46 +136,51 @@ class PlayerDataset(Dataset):
         random.shuffle(game_files)
 
         selected_files = game_files[:game_num]
-        processed = []
 
-        for file in selected_files:
-            game = torch.load(file, weights_only=True)
-            states = game['states']  # [T, 112, 8, 8]
-            T = states.size(0)
-            mask = torch.zeros(T, dtype=torch.bool)
+        # 使用多进程池并行处理文件
+        with Pool(processes=min(cpu_count(), len(selected_files))) as pool:
+            results = pool.map(process_file, selected_files)
 
-            paired_states = []
-            paired_mask = []
+        # 过滤掉无效结果（返回 None 的文件）
+        processed = [(states, mask, int(player_id)) for (states, mask) in results if states is not None]
 
-            # 根据文件名判断颜色
-            color = "white" if "white" in file else "black"
-            if color == 'white':
-                indices = range(0, T - 1, 2)  # 白方下在偶数步
-            else:
-                indices = range(1, T - 1, 2)  # 黑方下在奇数步
+        return processed
 
-            for idx, i in enumerate(indices):
-                s_t = states[i]
-                s_tp1 = states[i + 1]
-                s_pair = torch.cat([s_t, s_tp1], dim=0).half()  # 压缩为 float16
-                paired_states.append(s_pair)
-                paired_mask.append(mask[i])
 
-            if len(paired_states) < 1:
-                continue
+def process_file(file):
+    """
+    单独处理一个文件的逻辑，作为多进程的目标函数。
+    """
+    game = torch.load(file, weights_only=True)
+    states = game['states']  # [T, 112, 8, 8]
+    T = states.size(0)
+    mask = torch.zeros(T, dtype=torch.bool)
 
-            paired_states = torch.stack(paired_states)  # [T', 224, 8, 8]
-            paired_mask = torch.tensor(paired_mask, dtype=torch.bool)  # [T']
+    paired_states = []
+    paired_mask = []
 
-            processed.append((paired_states, paired_mask, int(player_id)))
+    # 根据文件名判断颜色
+    color = "white" if "white" in file else "black"
+    if color == 'white':
+        indices = range(0, T - 1, 2)  # 白方下在偶数步
+    else:
+        indices = range(1, T - 1, 2)  # 黑方下在奇数步
 
-        return processed  # List[(state, action, mask, player_id)]
+    for idx, i in enumerate(indices):
+        s_t = states[i]
+        s_tp1 = states[i + 1]
+        s_pair = torch.cat([s_t, s_tp1], dim=0).half()  # 压缩为 float16
+        paired_states.append(s_pair)
+        paired_mask.append(mask[i])
 
-    def __getitem__(self, index):
-        player_id = self.player_ids[index]
+    if len(paired_states) < 1:
+        return None  # 跳过无效文件
 
-        return self.get_player_data_by_id(player_id)
+    paired_states = torch.stack(paired_states)  # [T', 224, 8, 8]
+    paired_mask = torch.tensor(paired_mask, dtype=torch.bool)  # [T']
 
+    # 返回处理后的结果
+    return (paired_states, paired_mask)
 
 
 def lc0_eval_fens(fens, lc0_path="lc0", weights_path="your_network.pb.gz"):
