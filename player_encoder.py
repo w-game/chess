@@ -183,8 +183,9 @@ class EncoderTrainer:
 
             train_losses.append(avg_loss)
             val_losses.append(avg_val_loss)
-
-            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss}")
+            
+            if (epoch + 1) % 20 == 0:
+                print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}")
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
@@ -192,6 +193,7 @@ class EncoderTrainer:
                     'model_state_dict': self.encoder.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'avg_loss': avg_loss,
+                    'avg_val_loss': avg_val_loss
                 }, f"{save_path}/player_encoder_{epoch + 1}.pt")
                 print(f"📦 Model saved to {save_path}")
 
@@ -285,8 +287,9 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset,
                               batch_size=1,
                               shuffle=True,
-                              num_workers=16,
-                              pin_memory=True
+                              num_workers=8,
+                              pin_memory=True,
+                              persistent_workers=True
                               )
 
     val_dataset = MetaStyleDataset(load_dataset_file("val_players"), max_len=max_len)
@@ -294,8 +297,9 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset,
                             batch_size=1,
                             shuffle=True,
-                            num_workers=16,
+                            num_workers=8,
                             pin_memory=True,
+                            persistent_workers=True
                             )
 
     test_dataset = MetaStyleDataset(load_dataset_file("test_players"), max_len=max_len)
@@ -303,8 +307,9 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_dataset,
                              batch_size=1,
                              shuffle=True,
-                             num_workers=16,
+                             num_workers=8,
                              pin_memory=True,
+                             persistent_workers=True
                              )
 
     trainer = EncoderTrainer(train_loader, val_loader, test_loader, max_len=max_len)
@@ -312,6 +317,6 @@ if __name__ == '__main__':
     save_path = "./models/model_0"
     os.makedirs(save_path, exist_ok=True)
 
-    trainer.load_model(f"{save_path}/player_encoder_1.pt")
+    trainer.load_model(f"{save_path}/player_encoder_2.pt")
 
     trainer.train(save_path=save_path)
