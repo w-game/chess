@@ -4,12 +4,9 @@ import random
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
-import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
 from torch.utils.data import DataLoader
 
 from player_encoder.dataset import MetaStyleDataset
@@ -177,7 +174,7 @@ class EncoderTrainer:
                 self.optimizer.step()
 
                 total_loss += loss.item()
-                if (epoch + 1) % 20 == 0:
+                if (batch_count + 1) % 20 == 0:
                     print(f"  ├─ Batch {batch_count} Loss: {loss.item():.4f}")
 
             avg_loss = total_loss / batch_count
