@@ -114,7 +114,7 @@ class EncoderTrainer:
 
                 support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
                     batch)
-                with torch.amp.autocast():
+                with torch.autocast(device_type="cuda"):
                     loss, _, _ = self.task_proto_loss_and_acc(
                         support_pos, support_mask, support_labels,
                         query_pos, query_mask, query_labels
@@ -284,8 +284,8 @@ if __name__ == '__main__':
 
     trainer = EncoderTrainer(train_loader, val_loader, test_loader, max_len=max_len)
 
-    save_path = "./models/model_1"
-    model_idx = 10
+    save_path = "./models/model_2025_04_04"
+    model_idx = 0
     os.makedirs(save_path, exist_ok=True)
 
     trainer.load_model(f"{save_path}/player_encoder_{model_idx}.pt")
