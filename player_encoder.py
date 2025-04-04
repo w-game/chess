@@ -98,7 +98,7 @@ class EncoderTrainer:
         return avg_loss, accuracy
 
     def train(self, epochs=60, save_path="./models", model_idx=0):
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler('cuda')
         train_losses = []
         val_losses = []
 
