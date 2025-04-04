@@ -3,43 +3,60 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import torchvision.models as models
+from torchvision.models.resnet import Bottleneck
 
-class CoordConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
-        super().__init__()
-        self.conv = nn.Conv2d(in_channels + 2, out_channels, kernel_size, padding=padding)
-
-    def forward(self, x):
-        B, C, H, W = x.size()
-        xx = torch.linspace(0, 1, W, device=x.device).repeat(B, 1, H, 1).transpose(2, 3)
-        yy = torch.linspace(0, 1, H, device=x.device).repeat(B, 1, W, 1)
-        coords = torch.cat([xx, yy], dim=1)
-        x = torch.cat([x, coords], dim=1)
-        return self.conv(x)
-
+    
 class BoardCNNEncoder(nn.Module):
     def __init__(self, in_channels=112, out_dim=256):
         super(BoardCNNEncoder, self).__init__()
 
-        base_resnet = models.resnet34(weights=None)
-        base_resnet.conv1 = CoordConv(in_channels, 64, kernel_size=7, padding=3)
-        base_resnet.fc = nn.Identity()
+        base_resnet = models.resnet50(weights=None)
+
+        self.initial_conv = nn.Conv2d(in_channels, 256, kernel_size=7, stride=2, padding=3, bias=False)
+        base_resnet.bn1 = nn.BatchNorm2d(256)
+
+        base_resnet.layer1 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=3)
+
+        base_resnet.conv1 = nn.Identity()
+
         self.backbone = nn.Sequential(
-            base_resnet.conv1, base_resnet.bn1, base_resnet.relu,
+            self.initial_conv,
+            base_resnet.bn1,
+            base_resnet.relu,
             base_resnet.maxpool,
             base_resnet.layer1,
             base_resnet.layer2,
             base_resnet.layer3,
             base_resnet.layer4
         )
-        self.fc = nn.Linear(512, out_dim)
+
+        base_resnet.fc = nn.Identity()
+
+        self.fc = nn.Linear(2048, out_dim)
+
+    def _make_layer(self, block, inplanes, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+
+        layers = [block(inplanes, planes, stride, downsample)]
+        inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(inplanes, planes))
+        return nn.Sequential(*layers)
 
     def forward(self, x):
-        # x: [batch, 112, 8, 8]
-        x = self.backbone(x) 
-        x = F.adaptive_avg_pool2d(x, 1).squeeze(-1).squeeze(-1)
-        x = self.fc(x)
-        return x
+        # x: [B, 112, 8, 8]
+        x = self.backbone(x)                 # → [B, 2048, 1, 1]
+        x = F.adaptive_avg_pool2d(x, 1)      # → [B, 2048, 1, 1]
+        x = x.view(x.size(0), -1)            # → [B, 2048]
+        x = self.fc(x)                       # → [B, 256]
+        return x  
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=200):
@@ -59,9 +76,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
     
 class TransformerEncoder(nn.Module):
-    def __init__(self, cnn_in_channels=112, action_size=1858,
-                 state_embed_dim=256, action_embed_dim=256,
-                 fusion_out_dim=256, transformer_d_model=256,
+    def __init__(self, cnn_in_channels=112, state_embed_dim=256, transformer_d_model=256,
                  num_heads=8, num_layers=3, dropout=0.1, max_seq_len=100):
         """
         参数说明：
@@ -125,3 +140,14 @@ class TransformerEncoder(nn.Module):
         final_embedding = final_embedding / (norm + 1e-6)
 
         return final_embedding
+    
+
+if __name__ == "__main__":
+    # 测试代码
+    model = TransformerEncoder(cnn_in_channels=224, state_embed_dim=256, transformer_d_model=256,
+                             num_heads=8, num_layers=3, dropout=0.1, max_seq_len=100)
+    states = torch.randn(32, 100, 224, 8, 8)  # [batch, seq_len, C, H, W]
+    mask = torch.zeros(32, 100).bool()  # [batch, seq_len]
+    mask[:, :50] = True
+    output = model(states, mask=mask)
+    print(output.shape)

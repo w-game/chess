@@ -13,7 +13,7 @@ from player_encoder.encoder import TransformerEncoder
 
 
 class EncoderTrainer:
-    def __init__(self, train_loader, val_loader, test_loader, max_len=50):
+    def __init__(self, train_loader, val_loader, test_loader, max_len=100):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(self.device)
 
@@ -21,12 +21,8 @@ class EncoderTrainer:
         self.val_loader = val_loader
         self.test_loader = test_loader
 
-        self.encoder = TransformerEncoder(
-            cnn_in_channels=224, action_size=1858,
-            state_embed_dim=256, action_embed_dim=256, fusion_out_dim=256,
-            transformer_d_model=256, num_heads=8, num_layers=4,
-            dropout=0.1, max_seq_len=max_len
-        ).to(self.device)
+        self.encoder = TransformerEncoder(cnn_in_channels=224, state_embed_dim=256, transformer_d_model=256,
+                                          num_heads=8, num_layers=3, dropout=0.1, max_seq_len=max_len).to(self.device)
         self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
 
     def unpack_batch(self, batch):
@@ -84,10 +80,11 @@ class EncoderTrainer:
             batch_count += 1
 
             support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
-            loss, correct, total = self.task_proto_loss_and_acc(
-                support_pos, support_mask, support_labels,
-                query_pos, query_mask, query_labels
-            )
+            with torch.autocast(device_type="cuda"):
+                loss, correct, total = self.task_proto_loss_and_acc(
+                    support_pos, support_mask, support_labels,
+                    query_pos, query_mask, query_labels
+                )
 
             total_loss += loss.item()
             total_correct += correct
@@ -98,7 +95,7 @@ class EncoderTrainer:
         return avg_loss, accuracy
 
     def train(self, epochs=60, save_path="./models", model_idx=0):
-        scaler = torch.amp.GradScaler('cuda')
+        scaler = torch.GradScaler('cuda')
         train_losses = []
         val_losses = []
 
@@ -134,6 +131,11 @@ class EncoderTrainer:
                 total_loss += loss.item()
                 if (batch_count + 1) % 20 == 0:
                     print(f"  ├─ Batch {batch_count} Loss: {loss.item():.4f}")
+
+            del support_pos, support_mask, support_labels
+            del query_pos, query_mask, query_labels
+            del batch, loss
+            torch.cuda.empty_cache()
 
             avg_loss = total_loss / batch_count
             avg_val_loss, val_acc = self.val()
