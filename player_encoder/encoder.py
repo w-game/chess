@@ -16,6 +16,9 @@ class BoardCNNEncoder(nn.Module):
         base_resnet.bn1 = nn.BatchNorm2d(256)
 
         base_resnet.layer1 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=3)
+        base_resnet.layer2 = self._make_layer(Bottleneck, 64, blocks=4, stride=2)
+        base_resnet.layer3 = self._make_layer(Bottleneck, 64, blocks=6, stride=2)
+        base_resnet.layer4 = self._make_layer(Bottleneck, 64, blocks=3, stride=2)
 
         base_resnet.conv1 = nn.Identity()
 
@@ -32,7 +35,7 @@ class BoardCNNEncoder(nn.Module):
 
         base_resnet.fc = nn.Identity()
 
-        self.fc = nn.Linear(2048, out_dim)
+        self.fc = nn.Linear(256, out_dim)
 
     def _make_layer(self, block, inplanes, planes, blocks, stride=1):
         downsample = None
