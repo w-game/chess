@@ -114,7 +114,7 @@ class EncoderTrainer:
 
                 support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
                     batch)
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast():
                     loss, _, _ = self.task_proto_loss_and_acc(
                         support_pos, support_mask, support_labels,
                         query_pos, query_mask, query_labels
