@@ -28,7 +28,7 @@ class EncoderTrainer:
             transformer_d_model=256, num_heads=8, num_layers=4,
             dropout=0.1, max_seq_len=max_len
         ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
+        self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-5)
 
     def unpack_batch(self, batch):
         return (
@@ -92,7 +92,7 @@ class EncoderTrainer:
         accuracy = total_correct / total_samples
         return avg_loss, accuracy
 
-    def train(self, epochs=60, save_path="./models"):
+    def train(self, epochs=60, save_path="./models", model_idx=0):
         train_losses = []
         val_losses = []
 
@@ -142,20 +142,23 @@ class EncoderTrainer:
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'avg_loss': avg_loss,
                     'avg_val_loss': avg_val_loss
-                }, f"{save_path}/player_encoder_{epoch + 1}.pt")
+                }, f"{save_path}/player_encoder_{epoch + 1 + model_idx}.pt")
                 print(f"📦 Model saved to {save_path}")
 
-            if (epoch + 1) % 10 == 0:
-                trainer.style_consistency_analysis(
-                    num_trials=50,
-                    support_size=5,
-                    save_path="./style_consistency.png"
-                )
+            # if (epoch + 1) % 10 == 0:
+            #     trainer.style_consistency_analysis(
+            #         num_trials=50,
+            #         support_size=5,
+            #         save_path="./style_consistency.png"
+            #     )
 
         # 绘制 loss 曲线图
+        train_losses_cpu = [x.cpu().item() if isinstance(x, torch.Tensor) else x for x in train_losses]
+        val_losses_cpu = [x.cpu().item() if isinstance(x, torch.Tensor) else x for x in val_losses]
+
         plt.figure(figsize=(10, 5))
-        plt.plot(train_losses, label="Train Loss")
-        plt.plot(val_losses, label="Val Loss")
+        plt.plot(train_losses_cpu, label="Train Loss")
+        plt.plot(val_losses_cpu, label="Val Loss")
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
         plt.title("Training & Validation Loss Curve")
@@ -167,7 +170,7 @@ class EncoderTrainer:
 
     def load_model(self, model_path):
         if os.path.exists(model_path):
-            d = torch.load(model_path)
+            d = torch.load(model_path, weights_only=True)
             self.encoder.load_state_dict(d["model_state_dict"])
             self.optimizer.load_state_dict(d["optimizer_state_dict"])
 
@@ -181,36 +184,44 @@ class EncoderTrainer:
 
         with torch.no_grad():
             for trial in range(num_trials):
-                # 从测试集随机选一个 batch（即一名玩家的数据）
+                # 从测试集中随机选取一个 batch（包含多个任务，每个任务代表一名玩家的数据）
                 batch = next(iter(self.test_loader))
-                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
-                    batch)
+                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
 
-                unique_ids = support_labels.unique()
-                for player_id in unique_ids:
-                    indices = (support_labels == player_id).nonzero(as_tuple=True)[0].tolist()
-                    if len(indices) <= support_size:
-                        continue
+                # 针对每个任务（batch 内的每个样本）分别处理
+                for i in range(support_pos.size(0)):
+                    task_support_labels = support_labels[i]  # 形状: (num_support,)
+                    task_query_labels = query_labels[i]       # 形状: (num_query,)
 
-                    sampled_indices = random.sample(indices, support_size + 1)
-                    support_idx = sampled_indices[:support_size]
-                    query_idx = sampled_indices[-1:]
+                    for player_id in task_support_labels.unique():
+                        # 从支持集中获取对应玩家的样本索引，至少需要 support_size 个样本
+                        support_indices = (task_support_labels == player_id).nonzero(as_tuple=True)[0].tolist()
+                        if len(support_indices) < support_size:
+                            continue
+                        sampled_support_indices = random.sample(support_indices, support_size)
 
-                    support_p = support_pos[support_idx]
-                    support_m = support_mask[support_idx]
-                    query_p = support_pos[query_idx]
-                    query_m = support_mask[query_idx]
+                        support_p = support_pos[i][sampled_support_indices]  # 形状: (support_size, seq_len, C, H, W)
+                        support_m = support_mask[i][sampled_support_indices]
 
-                    # 构造原型
-                    support_z = self.encoder(support_p, support_m)
-                    proto = support_z.mean(dim=0, keepdim=True)  # [1, D]
+                        # 构造原型
+                        support_z = self.encoder(support_p, support_m)
+                        proto = support_z.mean(dim=0, keepdim=True)  # 形状: (1, D)
 
-                    # 新棋谱编码
-                    query_z = self.encoder(query_p, query_m)  # [1, D]
-                    dist = torch.norm(query_z - proto, dim=1).item()
-                    results[player_id.item()].append(dist)
+                        # 从 query 集中获取该玩家的所有样本索引
+                        query_indices = (task_query_labels == player_id).nonzero(as_tuple=True)[0].tolist()
+                        if not query_indices:
+                            continue
 
-        # 可视化柱状图
+                        query_p = query_pos[i][query_indices]  # 形状: (num_query_samples, seq_len, C, H, W)
+                        query_m = query_mask[i][query_indices]
+                        query_z = self.encoder(query_p, query_m)  # 形状: (num_query_samples, D)
+
+                        # 计算每个 query 样本与原型之间的距离
+                        distances = torch.norm(query_z - proto, dim=1)
+                        avg_distance = distances.mean().item()
+                        results[player_id.item()].append(avg_distance)
+
+        # 绘制柱状图：每个玩家所有 trial 的平均距离再次取平均
         plt.figure(figsize=(10, 5))
         sorted_ids = sorted(results.keys())
         avg_dists = [sum(results[k]) / len(results[k]) for k in sorted_ids]
@@ -266,8 +277,9 @@ if __name__ == '__main__':
     trainer = EncoderTrainer(train_loader, val_loader, test_loader, max_len=max_len)
 
     save_path = "./models/model_1"
+    model_idx = 10
     os.makedirs(save_path, exist_ok=True)
 
-    trainer.load_model(f"{save_path}/player_encoder_0.pt")
+    trainer.load_model(f"{save_path}/player_encoder_{model_idx}.pt")
 
-    trainer.train(save_path=save_path)
+    trainer.train(save_path=save_path, model_idx=model_idx)

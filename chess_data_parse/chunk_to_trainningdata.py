@@ -128,7 +128,7 @@ def chunk_to_records(chunk_file_lst):
 
 
 def chunk_to_trainingdata(player_name):
-    output_dir = f"./dataset/{player_name}"
+    output_dir = f"./dataset_2/{player_name}"
     os.makedirs(output_dir, exist_ok=True)
 
     whites, blacks = get_latest_chunks(f"./players/{player_name}")
