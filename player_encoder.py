@@ -5,7 +5,6 @@ from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
@@ -28,7 +27,7 @@ class EncoderTrainer:
             transformer_d_model=256, num_heads=8, num_layers=4,
             dropout=0.1, max_seq_len=max_len
         ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-5)
+        self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
 
     def unpack_batch(self, batch):
         return (
@@ -48,16 +47,22 @@ class EncoderTrainer:
 
         for i in range(B):
             support_z = self.encoder(support_pos[i], support_mask[i])
-            query_z = self.encoder(query_pos[i], query_mask[i])
 
             N = support_labels[i].max().item() + 1
-            prototypes = []
-            for j in range(N):
-                mask = (support_labels[i] == j)
-                if mask.sum() > 0:
-                    prototypes.append(support_z[mask].mean(dim=0))
-            prototypes = torch.stack(prototypes)
+            D = support_z.shape[-1]
+            # Initialize tensors for summing embeddings and counting occurrences per class
+            prototypes_sum = torch.zeros(N, D, device=support_z.device)
+            counts = torch.zeros(N, device=support_z.device)
+            
+            # Compute the sum of embeddings for each class in a vectorized manner
+            prototypes_sum = prototypes_sum.scatter_add(0, support_labels[i].unsqueeze(1).expand(-1, D), support_z)
+            # Count the number of samples for each class
+            counts = counts.scatter_add(0, support_labels[i], torch.ones_like(support_labels[i], dtype=torch.float))
+            
+            # Compute the mean (prototype) for each class
+            prototypes = prototypes_sum / counts.unsqueeze(1)
 
+            query_z = self.encoder(query_pos[i], query_mask[i])
             logits = -torch.cdist(query_z, prototypes)
             loss = F.cross_entropy(logits, query_labels[i])
             pred = torch.argmax(logits, dim=1)
@@ -84,7 +89,7 @@ class EncoderTrainer:
                 query_pos, query_mask, query_labels
             )
 
-            total_loss += loss
+            total_loss += loss.item()
             total_correct += correct
             total_samples += total
 
@@ -93,6 +98,7 @@ class EncoderTrainer:
         return avg_loss, accuracy
 
     def train(self, epochs=60, save_path="./models", model_idx=0):
+        scaler = torch.cuda.amp.GradScaler()
         train_losses = []
         val_losses = []
 
@@ -108,10 +114,11 @@ class EncoderTrainer:
 
                 support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
                     batch)
-                loss, _, _ = self.task_proto_loss_and_acc(
-                    support_pos, support_mask, support_labels,
-                    query_pos, query_mask, query_labels
-                )
+                with torch.cuda.amp.autocast():
+                    loss, _, _ = self.task_proto_loss_and_acc(
+                        support_pos, support_mask, support_labels,
+                        query_pos, query_mask, query_labels
+                    )
 
                 if torch.isnan(loss):
                     print("❌ Loss is NaN!")
@@ -120,8 +127,9 @@ class EncoderTrainer:
                     exit()
 
                 self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+                scaler.scale(loss).backward()
+                scaler.step(self.optimizer)
+                scaler.update()
 
                 total_loss += loss.item()
                 if (batch_count + 1) % 20 == 0:
