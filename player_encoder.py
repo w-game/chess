@@ -23,7 +23,20 @@ class EncoderTrainer:
 
         self.encoder = TransformerEncoder(cnn_in_channels=224, state_embed_dim=256, transformer_d_model=256,
                                           num_heads=8, num_layers=3, dropout=0.1, max_seq_len=max_len).to(self.device)
-        self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
+        # self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
+        model_params = self.encoder.parameters()
+        self.optimizer = torch.optim.AdamW(
+            model_params,
+            lr=1e-4,
+            weight_decay=1e-4
+        )
+        # 新建一个 SGD 优化器（你可以指定新的lr、momentum等）
+        # self.optimizer = torch.optim.SGD(
+        #     model_params,
+        #     lr=1e-4,
+        #     momentum=0.9,
+        #     weight_decay=1e-4
+        # )
 
     def unpack_batch(self, batch):
         return (
@@ -67,6 +80,9 @@ class EncoderTrainer:
             total_loss += loss
             total_correct += correct
             total_total += query_labels[i].size(0)
+
+            del support_z, query_z, logits, prototypes
+            torch.cuda.empty_cache()
 
         return total_loss / B, total_correct, total_total
 
@@ -128,14 +144,14 @@ class EncoderTrainer:
                 scaler.step(self.optimizer)
                 scaler.update()
 
-                total_loss += loss.item()
+                total_loss += loss.detach().item()
                 if (batch_count + 1) % 20 == 0:
                     print(f"  ├─ Batch {batch_count} Loss: {loss.item():.4f}")
 
-            del support_pos, support_mask, support_labels
-            del query_pos, query_mask, query_labels
-            del batch, loss
-            torch.cuda.empty_cache()
+                del support_pos, support_mask, support_labels
+                del query_pos, query_mask, query_labels
+                del batch, loss
+                torch.cuda.empty_cache()
 
             avg_loss = total_loss / batch_count
             avg_val_loss, val_acc = self.val()
@@ -182,7 +198,7 @@ class EncoderTrainer:
         if os.path.exists(model_path):
             d = torch.load(model_path, weights_only=True)
             self.encoder.load_state_dict(d["model_state_dict"])
-            self.optimizer.load_state_dict(d["optimizer_state_dict"])
+            # self.optimizer.load_state_dict(d["optimizer_state_dict"])
 
             # for param_group in self.optimizer.param_groups:
             #     param_group['lr'] = 0.0001
@@ -259,7 +275,7 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset,
                               batch_size=batch_size,
                               shuffle=True,
-                              pin_memory=True,
+                              pin_memory=False,
                               num_workers=num_workers,
                               persistent_workers=True
                               )
@@ -269,7 +285,7 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset,
                             batch_size=batch_size,
                             shuffle=True,
-                            pin_memory=True,
+                            pin_memory=False,
                             num_workers=num_workers,
                             persistent_workers=True
                             )
@@ -279,14 +295,14 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_dataset,
                             batch_size=batch_size,
                             shuffle=True,
-                            pin_memory=True,
+                            pin_memory=False,
                             num_workers=num_workers,
                             persistent_workers=True
                              )
 
     trainer = EncoderTrainer(train_loader, val_loader, test_loader, max_len=max_len)
 
-    save_path = "./models/model_2025_04_04"
+    save_path = "./models/model_2025_04_05"
     model_idx = 0
     os.makedirs(save_path, exist_ok=True)
 

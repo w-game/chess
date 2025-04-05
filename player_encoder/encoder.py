@@ -16,9 +16,9 @@ class BoardCNNEncoder(nn.Module):
         base_resnet.bn1 = nn.BatchNorm2d(256)
 
         base_resnet.layer1 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=3)
-        base_resnet.layer2 = self._make_layer(Bottleneck, 64, blocks=4, stride=2)
-        base_resnet.layer3 = self._make_layer(Bottleneck, 64, blocks=6, stride=2)
-        base_resnet.layer4 = self._make_layer(Bottleneck, 64, blocks=3, stride=2)
+        base_resnet.layer2 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=4, stride=2)
+        base_resnet.layer3 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=6, stride=2)
+        base_resnet.layer4 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=3, stride=2)
 
         base_resnet.conv1 = nn.Identity()
 
