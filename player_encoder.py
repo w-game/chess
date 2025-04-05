@@ -296,8 +296,8 @@ class EncoderTrainer:
             self.encoder.load_state_dict(d["model_state_dict"])
             # self.optimizer.load_state_dict(d["optimizer_state_dict"])
 
-            # for param_group in self.optimizer.param_groups:
-            #     param_group['lr'] = 0.0001
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = 1e-5
             print(f"load model from {model_path}")
 
     def style_consistency_analysis(self, num_trials=50, support_size=5, save_path="./style_consistency.png"):
@@ -363,10 +363,10 @@ def load_dataset_file(path):
 
 if __name__ == '__main__':
     max_len = 100
-    num_workers = 8
+    num_workers = 4
     batch_size = 4  # or 8 depending on memory
 
-    train_dataset = MetaStyleDataset(load_dataset_file("train_players"), 1000, max_len=max_len)
+    train_dataset = MetaStyleDataset(load_dataset_file("train_players"), 1000, N=3, max_len=max_len)
 
     train_loader = DataLoader(train_dataset,
                               batch_size=batch_size,
@@ -376,7 +376,7 @@ if __name__ == '__main__':
                               persistent_workers=True
                               )
 
-    val_dataset = MetaStyleDataset(load_dataset_file("val_players"), 150, max_len=max_len)
+    val_dataset = MetaStyleDataset(load_dataset_file("val_players"), 150, N=3, max_len=max_len)
 
     val_loader = DataLoader(val_dataset,
                             batch_size=batch_size,
@@ -398,7 +398,7 @@ if __name__ == '__main__':
 
     trainer = EncoderTrainer(train_loader, val_loader, max_len=max_len)
 
-    save_path = "./models/model_2025_04_05_N_10_K_5_Q_5"
+    save_path = "./models/model_2025_04_05_N_3_K_5_Q_5"
     model_idx = 0
     os.makedirs(save_path, exist_ok=True)
 

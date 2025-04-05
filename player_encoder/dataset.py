@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 
 
 class MetaStyleDataset(Dataset):
-    def __init__(self, player_files, data_len, N=10, K=5, Q=5, max_len=100):
+    def __init__(self, player_files, data_len, N=5, K=5, Q=5, max_len=100):
         self.player_dataset = PlayerDataset(player_files)
         self.data_len = data_len
         self.N = N
