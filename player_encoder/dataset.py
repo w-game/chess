@@ -11,15 +11,16 @@ from torch.utils.data import Dataset
 
 
 class MetaStyleDataset(Dataset):
-    def __init__(self, player_files, N=5, K=5, Q=5, max_len=100):
+    def __init__(self, player_files, data_len, N=10, K=5, Q=5, max_len=100):
         self.player_dataset = PlayerDataset(player_files)
+        self.data_len = data_len
         self.N = N
         self.K = K
         self.Q = Q
         self.max_len = max_len
 
     def __len__(self):
-        return 1000
+        return self.data_len
 
     def set_creator(self, sub_games, label_id):
         states, masks, labels = [], [], []
@@ -52,10 +53,16 @@ class MetaStyleDataset(Dataset):
             support_mask.extend(masks)
             support_labels.extend(labels)
 
+            # 清理不再需要的变量
+            del states, masks, labels
+
             states, masks, labels = self.set_creator(query_games, label_id)
             query_pos.extend(states)
             query_mask.extend(masks)
             query_labels.extend(labels)
+
+            # 清理不再需要的变量
+            del states, masks, labels
 
         return {
             'support_pos': torch.stack(support_pos),  # [N*K, T, 112, 8, 8]
@@ -140,7 +147,7 @@ class PlayerDataset(Dataset):
 
         # 使用线程池并行处理文件
         processed = []
-        with ThreadPoolExecutor(max_workers=min(cpu_count(), len(selected_files))) as executor:
+        with ThreadPoolExecutor(max_workers=min(cpu_count(), 8)) as executor:
             future_to_file = {executor.submit(process_file, file): file for file in selected_files}
             for future in as_completed(future_to_file):
                 try:
@@ -158,7 +165,7 @@ def process_file(file):
     """
     单独处理一个文件的逻辑，作为多进程的目标函数。
     """
-    game = torch.load(file, weights_only=True)
+    game = torch.load(file, map_location='cpu')
     states = game['states']  # [T, 112, 8, 8]
     T = states.size(0)
     mask = torch.zeros(T, dtype=torch.bool)
@@ -180,6 +187,9 @@ def process_file(file):
         paired_states.append(s_pair)
         paired_mask.append(mask[i])
 
+    # 清理不再需要的变量
+    del states, mask
+
     if len(paired_states) < 1:
         return None  # 跳过无效文件
 
@@ -188,33 +198,6 @@ def process_file(file):
 
     # 返回处理后的结果
     return (paired_states, paired_mask)
-
-
-def lc0_eval_fens(fens, lc0_path="lc0", weights_path="your_network.pb.gz"):
-    evals = []
-    proc = subprocess.Popen(
-        [lc0_path, f"--weights={weights_path}"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        universal_newlines=True,
-        bufsize=1,
-    )
-    for fen in fens:
-        proc.stdin.write(f"position fen {fen}\ngo depth 1\n")
-        proc.stdin.flush()
-        score = None
-        for line in proc.stdout:
-            if "score cp" in line:
-                try:
-                    score = int(line.split("score cp")[1].split()[0])
-                except:
-                    score = 0
-                break
-        evals.append(score if score is not None else 0)
-    proc.stdin.close()
-    proc.wait()
-    return evals
 
 
 if __name__ == '__main__':

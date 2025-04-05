@@ -13,7 +13,7 @@ from player_encoder.encoder import TransformerEncoder
 
 
 class EncoderTrainer:
-    def __init__(self, train_loader, val_loader, test_loader, max_len=100):
+    def __init__(self, train_loader, val_loader, test_loader=None, max_len=100):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(self.device)
 
@@ -27,7 +27,7 @@ class EncoderTrainer:
         model_params = self.encoder.parameters()
         self.optimizer = torch.optim.AdamW(
             model_params,
-            lr=1e-4,
+            lr=1e-5,
             weight_decay=1e-4
         )
         # 新建一个 SGD 优化器（你可以指定新的lr、momentum等）
@@ -270,7 +270,7 @@ if __name__ == '__main__':
     num_workers = 8
     batch_size = 4  # or 8 depending on memory
 
-    train_dataset = MetaStyleDataset(load_dataset_file("train_players"), max_len=max_len)
+    train_dataset = MetaStyleDataset(load_dataset_file("train_players"), 1000, max_len=max_len)
 
     train_loader = DataLoader(train_dataset,
                               batch_size=batch_size,
@@ -280,7 +280,7 @@ if __name__ == '__main__':
                               persistent_workers=True
                               )
 
-    val_dataset = MetaStyleDataset(load_dataset_file("val_players"), max_len=max_len)
+    val_dataset = MetaStyleDataset(load_dataset_file("val_players"), 150, max_len=max_len)
 
     val_loader = DataLoader(val_dataset,
                             batch_size=batch_size,
@@ -290,19 +290,19 @@ if __name__ == '__main__':
                             persistent_workers=True
                             )
 
-    test_dataset = MetaStyleDataset(load_dataset_file("test_players"), max_len=max_len)
+    # test_dataset = MetaStyleDataset(load_dataset_file("test_players"), 150, max_len=max_len)
 
-    test_loader = DataLoader(test_dataset,
-                            batch_size=batch_size,
-                            shuffle=True,
-                            pin_memory=False,
-                            num_workers=num_workers,
-                            persistent_workers=True
-                             )
+    # test_loader = DataLoader(test_dataset,
+    #                         batch_size=batch_size,
+    #                         shuffle=True,
+    #                         pin_memory=False,
+    #                         num_workers=num_workers,s
+    #                         persistent_workers=True
+    #                          )
 
-    trainer = EncoderTrainer(train_loader, val_loader, test_loader, max_len=max_len)
+    trainer = EncoderTrainer(train_loader, val_loader, max_len=max_len)
 
-    save_path = "./models/model_2025_04_05"
+    save_path = "./models/model_2025_04_05_N_10_K_5_Q_5"
     model_idx = 0
     os.makedirs(save_path, exist_ok=True)
 
