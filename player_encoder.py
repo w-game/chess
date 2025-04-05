@@ -63,6 +63,31 @@ def compute_similarity_percent_exp(query_z, prototypes, labels, alpha=1.0):
     return similarity_percent, avg_similarity
 
 
+def compute_similarity_percent_cosine(query_z, prototypes, labels):
+    """
+    使用余弦相似度，将 (query, prototype) 的相似度映射到 [0, 100%]。
+    - 对每个 query，先找出其对应的原型 prototype[labels[i]]。
+    - 计算余弦相似度 cos_sim ∈ [-1, 1]。
+    - 再把 [-1, 1] 线性映射到 [0, 1]，最后乘以 100%。
+
+    返回:
+      similarity_percent: shape (N,)，每个 query 样本的相似度百分比
+      avg_similarity: 平均相似度百分比 (float)
+    """
+
+    chosen_proto = prototypes[labels]  # (N, d)
+    # 计算余弦相似度 (N,)
+    cos_sims = F.cosine_similarity(query_z, chosen_proto, dim=1)
+
+    # 如果你确信 cos_sims 都是 >= 0，也可直接 cos_sims*100。
+    # 通用做法: 把 [-1, 1] -> [0, 1]，再 -> [0, 100]
+    similarity_percent = (cos_sims + 1.0) / 2.0 * 100.0
+
+    # 平均值
+    avg_similarity = similarity_percent.mean().item()
+    return similarity_percent, avg_similarity
+
+
 class EncoderTrainer:
     def __init__(self, train_loader, val_loader, test_loader=None, max_len=100):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -106,6 +131,7 @@ class EncoderTrainer:
         total_total = 0
         total_score_linear = 0
         total_score_exp = 0
+        total_score_cosine = 0
 
         for i in range(B):
             support_z = self.encoder(support_pos[i], support_mask[i])
@@ -137,13 +163,15 @@ class EncoderTrainer:
             # 使用 compute_similarity_percent_linear 或 compute_similarity_percent_exp
             similarity_percent, avg_similarity_linear = compute_similarity_percent_linear(query_z, prototypes, query_labels[i])
             similarity_percent, avg_similarity_exp = compute_similarity_percent_exp(query_z, prototypes, query_labels[i])
+            similarity_percent, avg_similarity_cosine = compute_similarity_percent_cosine(query_z, prototypes, query_labels[i])
             total_score_linear += avg_similarity_linear
             total_score_exp += avg_similarity_exp
+            total_score_cosine += avg_similarity_cosine
 
             del support_z, query_z, logits, prototypes
             torch.cuda.empty_cache()
 
-        return total_loss / B, total_correct, total_total, total_score_exp / B, total_score_linear / B
+        return total_loss / B, total_correct, total_total, total_score_exp / B, total_score_linear / B, total_score_cosine / B
 
     @torch.no_grad()
     def val(self):
@@ -153,12 +181,13 @@ class EncoderTrainer:
         batch_count = 0
         total_score_linear = 0
         total_score_exp = 0
+        total_score_cosine = 0
         for batch in self.val_loader:
             batch_count += 1
 
             support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
             with torch.autocast(device_type="cuda"):
-                loss, correct, total, score_exp, score_linear = self.task_proto_loss_and_acc(
+                loss, correct, total, score_exp, score_linear, score_cosin = self.task_proto_loss_and_acc(
                     support_pos, support_mask, support_labels,
                     query_pos, query_mask, query_labels
                 )
@@ -168,12 +197,14 @@ class EncoderTrainer:
             total_samples += total
             total_score_linear += score_linear
             total_score_exp += score_exp
+            total_score_cosine += score_cosin
 
         avg_loss = total_loss / batch_count
         accuracy = total_correct / total_samples
         avg_score_linear = total_score_linear / batch_count
         avg_score_exp = total_score_exp / batch_count
-        return avg_loss, accuracy, avg_score_linear, avg_score_exp
+        avg_score_cosine = total_score_cosine / batch_count
+        return avg_loss, accuracy, avg_score_linear, avg_score_exp, avg_score_cosine
 
     def train(self, epochs=60, save_path="./models", model_idx=0):
         scaler = torch.GradScaler('cuda')
@@ -193,7 +224,7 @@ class EncoderTrainer:
                 support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
                     batch)
                 with torch.autocast(device_type="cuda"):
-                    loss, _, _, _, _ = self.task_proto_loss_and_acc(
+                    loss, _, _, _, _, _ = self.task_proto_loss_and_acc(
                         support_pos, support_mask, support_labels,
                         query_pos, query_mask, query_labels
                     )
@@ -219,12 +250,12 @@ class EncoderTrainer:
                 torch.cuda.empty_cache()
 
             avg_loss = total_loss / batch_count
-            avg_val_loss, val_acc, val_score_linear, val_score_exp = self.val()
+            avg_val_loss, val_acc, val_score_linear, val_score_exp, val_score_cosin = self.val()
 
             train_losses.append(avg_loss)
             val_losses.append(avg_val_loss)
 
-            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Exp Score: {val_score_exp:.4f}, Val Linear Score: {val_score_linear:.4f}")
+            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Exp Score: {val_score_exp:.4f}, Val Linear Score: {val_score_linear:.4f}, Val Cosine Score: {val_score_cosin:.4f}")
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
