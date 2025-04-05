@@ -11,6 +11,57 @@ from torch.utils.data import DataLoader
 from player_encoder.dataset import MetaStyleDataset
 from player_encoder.encoder import TransformerEncoder
 
+def compute_similarity_percent_linear(query_z, prototypes, labels):
+    """
+    使用线性归一化，将 (query - prototype) 的欧几里得距离映射到 [0, 100%]。
+    距离越小 -> 相似度越高 -> 分数越接近 100%。
+    """
+
+    # 1. 计算每个 query 到其真实类别原型的欧几里得距离
+    # 注意 gather/index 的方式，可以根据你的数据结构做对应修改
+    # 下面这种写法适合 prototypes 和 query_z 都是 batch 化的情况
+    # 如果你是循环计算，也可以用 for-loop。
+    # 这里 labels 的大小是 (N,)，故先把 labels 用在 prototypes 上再减。
+    chosen_proto = prototypes[labels]      # 形状 (N, d)
+    distances = (query_z - chosen_proto).norm(p=2, dim=1)  # 形状 (N,)
+
+    # 2. 找到距离的最小值和最大值，用于做线性映射
+    dist_min = distances.min().item()
+    dist_max = distances.max().item()
+
+    # 如果数据集中所有距离都一样，dist_max == dist_min，需要做一下保护
+    if abs(dist_max - dist_min) < 1e-9:
+        # 所有距离相同，说明相似度都一样，可以直接返回一个常数或全 100%
+        return torch.full_like(distances, 100.0)
+
+    # 3. 将距离 linearly map 到 0~1 的区间： 0 对应最小距离，1 对应最大距离
+    normalized_dist = (distances - dist_min) / (dist_max - dist_min)
+
+    # 4. 将 0~1 的距离映射到 1~0 的相似度，再乘以 100
+    similarity = 1.0 - normalized_dist
+    similarity_percent = similarity * 100.0
+
+    # 5. 如果你要一个全局平均值，也可以再 .mean()
+    avg_similarity = similarity_percent.mean().item()
+    return similarity_percent, avg_similarity
+
+
+def compute_similarity_percent_exp(query_z, prototypes, labels, alpha=1.0):
+    """
+    使用指数衰减，将距离映射到相似度（0~100%）。
+    alpha 是超参数，控制距离增大时相似度下降的速度。
+    距离越大 -> e^{-alpha * distance} 越小。
+    """
+    chosen_proto = prototypes[labels]
+    distances = (query_z - chosen_proto).norm(p=2, dim=1)
+
+    # e^{-alpha * distance} 范围 (0, 1]，距离=0 时等于 1
+    similarity = torch.exp(-alpha * distances)
+    similarity_percent = similarity * 100.0
+
+    avg_similarity = similarity_percent.mean().item()
+    return similarity_percent, avg_similarity
+
 
 class EncoderTrainer:
     def __init__(self, train_loader, val_loader, test_loader=None, max_len=100):
@@ -53,7 +104,8 @@ class EncoderTrainer:
         total_loss = 0
         total_correct = 0
         total_total = 0
-        total_score = 0
+        total_score_linear = 0
+        total_score_exp = 0
 
         for i in range(B):
             support_z = self.encoder(support_pos[i], support_mask[i])
@@ -82,12 +134,16 @@ class EncoderTrainer:
             total_loss += loss
             total_correct += correct
             total_total += query_labels[i].size(0)
-            total_score += score
+            # 使用 compute_similarity_percent_linear 或 compute_similarity_percent_exp
+            similarity_percent, avg_similarity_linear = compute_similarity_percent_linear(query_z, prototypes, query_labels[i])
+            similarity_percent, avg_similarity_exp = compute_similarity_percent_exp(query_z, prototypes, query_labels[i])
+            total_score_linear += avg_similarity_linear
+            total_score_exp += avg_similarity_exp
 
             del support_z, query_z, logits, prototypes
             torch.cuda.empty_cache()
 
-        return total_loss / B, total_correct, total_total, total_score / B
+        return total_loss / B, total_correct, total_total, total_score_exp / B, total_score_linear / B
 
     @torch.no_grad()
     def val(self):
@@ -95,13 +151,14 @@ class EncoderTrainer:
         total_correct = 0
         total_samples = 0
         batch_count = 0
-        total_score = 0
+        total_score_linear = 0
+        total_score_exp = 0
         for batch in self.val_loader:
             batch_count += 1
 
             support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
             with torch.autocast(device_type="cuda"):
-                loss, correct, total, score = self.task_proto_loss_and_acc(
+                loss, correct, total, score_exp, score_linear = self.task_proto_loss_and_acc(
                     support_pos, support_mask, support_labels,
                     query_pos, query_mask, query_labels
                 )
@@ -109,12 +166,14 @@ class EncoderTrainer:
             total_loss += loss.item()
             total_correct += correct
             total_samples += total
-            total_score += score
+            total_score_linear += score_linear
+            total_score_exp += score_exp
 
         avg_loss = total_loss / batch_count
         accuracy = total_correct / total_samples
-        avg_score = total_score / batch_count
-        return avg_loss, accuracy, avg_score
+        avg_score_linear = total_score_linear / batch_count
+        avg_score_exp = total_score_exp / batch_count
+        return avg_loss, accuracy, avg_score_linear, avg_score_exp
 
     def train(self, epochs=60, save_path="./models", model_idx=0):
         scaler = torch.GradScaler('cuda')
@@ -134,7 +193,7 @@ class EncoderTrainer:
                 support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
                     batch)
                 with torch.autocast(device_type="cuda"):
-                    loss, _, _, _ = self.task_proto_loss_and_acc(
+                    loss, _, _, _, _ = self.task_proto_loss_and_acc(
                         support_pos, support_mask, support_labels,
                         query_pos, query_mask, query_labels
                     )
@@ -160,12 +219,12 @@ class EncoderTrainer:
                 torch.cuda.empty_cache()
 
             avg_loss = total_loss / batch_count
-            avg_val_loss, val_acc, val_score = self.val()
+            avg_val_loss, val_acc, val_score_linear, val_score_exp = self.val()
 
             train_losses.append(avg_loss)
             val_losses.append(avg_val_loss)
 
-            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Score: {val_score:.4f}")
+            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Exp Score: {val_score_exp:.4f}, Val Linear Score: {val_score_linear:.4f}")
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
