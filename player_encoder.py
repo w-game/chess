@@ -53,6 +53,7 @@ class EncoderTrainer:
         total_loss = 0
         total_correct = 0
         total_total = 0
+        total_score = 0
 
         for i in range(B):
             support_z = self.encoder(support_pos[i], support_mask[i])
@@ -76,15 +77,17 @@ class EncoderTrainer:
             loss = F.cross_entropy(logits, query_labels[i])
             pred = torch.argmax(logits, dim=1)
             correct = (pred == query_labels[i]).sum().item()
+            score = (query_z - prototypes[query_labels[i]]).norm(p=2, dim=1).mean().item()
 
             total_loss += loss
             total_correct += correct
             total_total += query_labels[i].size(0)
+            total_score += score
 
             del support_z, query_z, logits, prototypes
             torch.cuda.empty_cache()
 
-        return total_loss / B, total_correct, total_total
+        return total_loss / B, total_correct, total_total, total_score / B
 
     @torch.no_grad()
     def val(self):
@@ -92,12 +95,13 @@ class EncoderTrainer:
         total_correct = 0
         total_samples = 0
         batch_count = 0
+        total_score = 0
         for batch in self.val_loader:
             batch_count += 1
 
             support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
             with torch.autocast(device_type="cuda"):
-                loss, correct, total = self.task_proto_loss_and_acc(
+                loss, correct, total, score = self.task_proto_loss_and_acc(
                     support_pos, support_mask, support_labels,
                     query_pos, query_mask, query_labels
                 )
@@ -105,10 +109,12 @@ class EncoderTrainer:
             total_loss += loss.item()
             total_correct += correct
             total_samples += total
+            total_score += score
 
         avg_loss = total_loss / batch_count
         accuracy = total_correct / total_samples
-        return avg_loss, accuracy
+        avg_score = total_score / batch_count
+        return avg_loss, accuracy, avg_score
 
     def train(self, epochs=60, save_path="./models", model_idx=0):
         scaler = torch.GradScaler('cuda')
@@ -128,7 +134,7 @@ class EncoderTrainer:
                 support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
                     batch)
                 with torch.autocast(device_type="cuda"):
-                    loss, _, _ = self.task_proto_loss_and_acc(
+                    loss, _, _, _ = self.task_proto_loss_and_acc(
                         support_pos, support_mask, support_labels,
                         query_pos, query_mask, query_labels
                     )
@@ -154,12 +160,12 @@ class EncoderTrainer:
                 torch.cuda.empty_cache()
 
             avg_loss = total_loss / batch_count
-            avg_val_loss, val_acc = self.val()
+            avg_val_loss, val_acc, val_score = self.val()
 
             train_losses.append(avg_loss)
             val_losses.append(avg_val_loss)
 
-            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%")
+            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Score: {val_score:.4f}")
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
