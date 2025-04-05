@@ -5,59 +5,59 @@ import torch.nn.functional as F
 import torchvision.models as models
 from torchvision.models.resnet import Bottleneck
 
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.bn1   = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.bn2   = nn.BatchNorm2d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += residual  # 残差连接
+        out = F.relu(out)
+        return out
     
 class BoardCNNEncoder(nn.Module):
     def __init__(self, in_channels=112, out_dim=256):
         super(BoardCNNEncoder, self).__init__()
 
-        base_resnet = models.resnet50(weights=None)
-
-        self.initial_conv = nn.Conv2d(in_channels, 256, kernel_size=7, stride=2, padding=3, bias=False)
-        base_resnet.bn1 = nn.BatchNorm2d(256)
-
-        base_resnet.layer1 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=3)
-        base_resnet.layer2 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=4, stride=2)
-        base_resnet.layer3 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=6, stride=2)
-        base_resnet.layer4 = self._make_layer(Bottleneck, inplanes=256, planes=64, blocks=3, stride=2)
-
-        base_resnet.conv1 = nn.Identity()
-
         self.backbone = nn.Sequential(
-            self.initial_conv,
-            base_resnet.bn1,
-            base_resnet.relu,
-            base_resnet.maxpool,
-            base_resnet.layer1,
-            base_resnet.layer2,
-            base_resnet.layer3,
-            base_resnet.layer4
+            nn.Conv2d(in_channels, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            *nn.ModuleList([ResidualBlock(256) for _ in range(20)]),
+            nn.Conv2d(256, 2, kernel_size=1),
+            nn.BatchNorm2d(2),
+            nn.ReLU(inplace=True),
+            nn.Flatten(),
+            nn.Linear(2 * 8 * 8, out_dim),
         )
+        
+    # def _make_layer(self, block, inplanes, planes, blocks, stride=1):
+    #     downsample = None
+    #     if stride != 1 or inplanes != planes * block.expansion:
+    #         downsample = nn.Sequential(
+    #             nn.Conv2d(inplanes, planes * block.expansion,
+    #                       kernel_size=1, stride=stride, bias=False),
+    #             nn.BatchNorm2d(planes * block.expansion),
+    #         )
 
-        base_resnet.fc = nn.Identity()
-
-        self.fc = nn.Linear(256, out_dim)
-
-    def _make_layer(self, block, inplanes, planes, blocks, stride=1):
-        downsample = None
-        if stride != 1 or inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
-            )
-
-        layers = [block(inplanes, planes, stride, downsample)]
-        inplanes = planes * block.expansion
-        for _ in range(1, blocks):
-            layers.append(block(inplanes, planes))
-        return nn.Sequential(*layers)
+    #     layers = [block(inplanes, planes, stride, downsample)]
+    #     inplanes = planes * block.expansion
+    #     for _ in range(1, blocks):
+    #         layers.append(block(inplanes, planes))
+    #     return nn.Sequential(*layers)
 
     def forward(self, x):
         # x: [B, 112, 8, 8]
         x = self.backbone(x)                 # → [B, 2048, 1, 1]
-        x = F.adaptive_avg_pool2d(x, 1)      # → [B, 2048, 1, 1]
-        x = x.view(x.size(0), -1)            # → [B, 2048]
-        x = self.fc(x)                       # → [B, 256]
+        # x = F.adaptive_avg_pool2d(x, 1)      # → [B, 2048, 1, 1]
+        # x = x.view(x.size(0), -1)            # → [B, 2048]
+        # x = self.fc(x)                       # → [B, 256]
         return x  
 
 
