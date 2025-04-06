@@ -5,63 +5,54 @@ from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from player_encoder.dataset import MetaStyleDataset
 from player_encoder.encoder import TransformerEncoder
 
-def compute_similarity_percent_linear(query_z, prototypes, labels):
-    """
-    使用线性归一化，将 (query - prototype) 的欧几里得距离映射到 [0, 100%]。
-    距离越小 -> 相似度越高 -> 分数越接近 100%。
-    """
 
-    # 1. 计算每个 query 到其真实类别原型的欧几里得距离
-    # 注意 gather/index 的方式，可以根据你的数据结构做对应修改
-    # 下面这种写法适合 prototypes 和 query_z 都是 batch 化的情况
-    # 如果你是循环计算，也可以用 for-loop。
-    # 这里 labels 的大小是 (N,)，故先把 labels 用在 prototypes 上再减。
-    chosen_proto = prototypes[labels]      # 形状 (N, d)
-    distances = (query_z - chosen_proto).norm(p=2, dim=1)  # 形状 (N,)
+class SupConLoss(nn.Module):
+    """Supervised Contrastive Loss as in: https://arxiv.org/pdf/2004.11362.pdf"""
+    def __init__(self, temperature=0.07):
+        super().__init__()
+        self.temperature = temperature
 
-    # 2. 找到距离的最小值和最大值，用于做线性映射
-    dist_min = distances.min().item()
-    dist_max = distances.max().item()
+    def forward(self, features, labels):
+        """
+        features: [N, D] embedding vectors
+        labels: [N] with integer labels
+        """
+        device = features.device
+        labels = labels.contiguous().view(-1, 1)  # [N, 1]
+        mask = torch.eq(labels, labels.T).float().to(device)  # [N, N]
 
-    # 如果数据集中所有距离都一样，dist_max == dist_min，需要做一下保护
-    if abs(dist_max - dist_min) < 1e-9:
-        # 所有距离相同，说明相似度都一样，可以直接返回一个常数或全 100%
-        return torch.full_like(distances, 100.0)
+        contrast_count = 1
+        contrast_feature = features
+        anchor_feature = contrast_feature
+        anchor_dot_contrast = torch.div(
+            torch.matmul(anchor_feature, contrast_feature.T),
+            self.temperature)
 
-    # 3. 将距离 linearly map 到 0~1 的区间： 0 对应最小距离，1 对应最大距离
-    normalized_dist = (distances - dist_min) / (dist_max - dist_min)
+        # For numerical stability
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
 
-    # 4. 将 0~1 的距离映射到 1~0 的相似度，再乘以 100
-    similarity = 1.0 - normalized_dist
-    similarity_percent = similarity * 100.0
+        # Mask out self-contrast cases
+        logits_mask = torch.ones_like(mask).fill_diagonal_(0)
+        mask = mask * logits_mask
 
-    # 5. 如果你要一个全局平均值，也可以再 .mean()
-    avg_similarity = similarity_percent.mean().item()
-    return similarity_percent, avg_similarity
+        # Compute log_prob
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-8)
 
+        # Mean of log-likelihood over positive
+        mean_log_prob_pos = (mask * log_prob).sum(1) / (mask.sum(1) + 1e-8)
 
-def compute_similarity_percent_exp(query_z, prototypes, labels, alpha=1.0):
-    """
-    使用指数衰减，将距离映射到相似度（0~100%）。
-    alpha 是超参数，控制距离增大时相似度下降的速度。
-    距离越大 -> e^{-alpha * distance} 越小。
-    """
-    chosen_proto = prototypes[labels]
-    distances = (query_z - chosen_proto).norm(p=2, dim=1)
-
-    # e^{-alpha * distance} 范围 (0, 1]，距离=0 时等于 1
-    similarity = torch.exp(-alpha * distances)
-    similarity_percent = similarity * 100.0
-
-    avg_similarity = similarity_percent.mean().item()
-    return similarity_percent, avg_similarity
-
+        # Loss
+        loss = -mean_log_prob_pos.mean()
+        return loss
 
 def compute_similarity_percent_cosine(query_z, prototypes, labels):
     """
@@ -106,6 +97,7 @@ class EncoderTrainer:
             lr=1e-5,
             weight_decay=1e-4
         )
+        self.supcon_loss = SupConLoss(temperature=0.07)
         # 新建一个 SGD 优化器（你可以指定新的lr、momentum等）
         # self.optimizer = torch.optim.SGD(
         #     model_params,
@@ -129,8 +121,6 @@ class EncoderTrainer:
         total_loss = 0
         total_correct = 0
         total_total = 0
-        total_score_linear = 0
-        total_score_exp = 0
         total_score_cosine = 0
 
         for i in range(B):
@@ -151,27 +141,24 @@ class EncoderTrainer:
             prototypes = prototypes_sum / counts.unsqueeze(1)
 
             query_z = self.encoder(query_pos[i], query_mask[i])
+
+            supcon_loss = self.supcon_loss(query_z, query_labels[i])
             logits = -torch.cdist(query_z, prototypes)
             loss = F.cross_entropy(logits, query_labels[i])
             pred = torch.argmax(logits, dim=1)
             correct = (pred == query_labels[i]).sum().item()
-            score = (query_z - prototypes[query_labels[i]]).norm(p=2, dim=1).mean().item()
 
-            total_loss += loss
+            total_loss += loss + 0.1 * supcon_loss
             total_correct += correct
             total_total += query_labels[i].size(0)
-            # 使用 compute_similarity_percent_linear 或 compute_similarity_percent_exp
-            similarity_percent, avg_similarity_linear = compute_similarity_percent_linear(query_z, prototypes, query_labels[i])
-            similarity_percent, avg_similarity_exp = compute_similarity_percent_exp(query_z, prototypes, query_labels[i])
+
             similarity_percent, avg_similarity_cosine = compute_similarity_percent_cosine(query_z, prototypes, query_labels[i])
-            total_score_linear += avg_similarity_linear
-            total_score_exp += avg_similarity_exp
             total_score_cosine += avg_similarity_cosine
 
             del support_z, query_z, logits, prototypes
             torch.cuda.empty_cache()
 
-        return total_loss / B, total_correct, total_total, total_score_exp / B, total_score_linear / B, total_score_cosine / B
+        return total_loss / B, total_correct, total_total, total_score_cosine / B
 
     @torch.no_grad()
     def val(self):
@@ -187,7 +174,7 @@ class EncoderTrainer:
 
             support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
             with torch.autocast(device_type="cuda"):
-                loss, correct, total, score_exp, score_linear, score_cosin = self.task_proto_loss_and_acc(
+                loss, correct, total, score_cosin = self.task_proto_loss_and_acc(
                     support_pos, support_mask, support_labels,
                     query_pos, query_mask, query_labels
                 )
@@ -195,8 +182,6 @@ class EncoderTrainer:
             total_loss += loss.item()
             total_correct += correct
             total_samples += total
-            total_score_linear += score_linear
-            total_score_exp += score_exp
             total_score_cosine += score_cosin
 
         avg_loss = total_loss / batch_count
@@ -224,7 +209,7 @@ class EncoderTrainer:
                 support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
                     batch)
                 with torch.autocast(device_type="cuda"):
-                    loss, _, _, _, _, _ = self.task_proto_loss_and_acc(
+                    loss, _, _, _ = self.task_proto_loss_and_acc(
                         support_pos, support_mask, support_labels,
                         query_pos, query_mask, query_labels
                     )
@@ -250,12 +235,12 @@ class EncoderTrainer:
                 torch.cuda.empty_cache()
 
             avg_loss = total_loss / batch_count
-            avg_val_loss, val_acc, val_score_linear, val_score_exp, val_score_cosin = self.val()
+            avg_val_loss, val_acc, val_score_cosin = self.val()
 
             train_losses.append(avg_loss)
             val_losses.append(avg_val_loss)
 
-            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Exp Score: {val_score_exp:.4f}, Val Linear Score: {val_score_linear:.4f}, Val Cosine Score: {val_score_cosin:.4f}")
+            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Cosine Score: {val_score_cosin:.4f}")
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
