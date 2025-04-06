@@ -136,7 +136,7 @@ class EncoderTrainer:
         total_similarity = 0
 
         for i in range(B):
-            support_z = self.encoder(support_pos[i], support_mask[i])
+            _, support_z = self.encoder(support_pos[i], support_mask[i])
 
             N = support_labels[i].max().item() + 1
             D = support_z.shape[-1]
@@ -152,9 +152,9 @@ class EncoderTrainer:
             # Compute the mean (prototype) for each class
             prototypes = prototypes_sum / counts.unsqueeze(1)
 
-            query_z = self.encoder(query_pos[i], query_mask[i])
+            contrastive_z, query_z = self.encoder(query_pos[i], query_mask[i])
 
-            supcon_loss = self.supcon_loss(query_z, query_labels[i])
+            supcon_loss = self.supcon_loss(contrastive_z, query_labels[i])
             logits = -torch.cdist(query_z, prototypes)
             loss = F.cross_entropy(logits, query_labels[i])
             pred = torch.argmax(logits, dim=1)
@@ -322,7 +322,7 @@ class EncoderTrainer:
                         support_m = support_mask[i][sampled_support_indices]
 
                         # 构造原型
-                        support_z = self.encoder(support_p, support_m)
+                        _, support_z = self.encoder(support_p, support_m)
                         proto = support_z.mean(dim=0, keepdim=True)  # 形状: (1, D)
 
                         # 从 query 集中获取该玩家的所有样本索引
@@ -332,7 +332,7 @@ class EncoderTrainer:
 
                         query_p = query_pos[i][query_indices]  # 形状: (num_query_samples, seq_len, C, H, W)
                         query_m = query_mask[i][query_indices]
-                        query_z = self.encoder(query_p, query_m)  # 形状: (num_query_samples, D)
+                        _, query_z = self.encoder(query_p, query_m)  # 形状: (num_query_samples, D)
 
                         # 计算每个 query 样本与原型之间的距离
                         distances = torch.norm(query_z - proto, dim=1)

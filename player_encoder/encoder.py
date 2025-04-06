@@ -36,28 +36,10 @@ class BoardCNNEncoder(nn.Module):
             nn.Flatten(),
             nn.Linear(2 * 8 * 8, out_dim),
         )
-        
-    # def _make_layer(self, block, inplanes, planes, blocks, stride=1):
-    #     downsample = None
-    #     if stride != 1 or inplanes != planes * block.expansion:
-    #         downsample = nn.Sequential(
-    #             nn.Conv2d(inplanes, planes * block.expansion,
-    #                       kernel_size=1, stride=stride, bias=False),
-    #             nn.BatchNorm2d(planes * block.expansion),
-    #         )
-
-    #     layers = [block(inplanes, planes, stride, downsample)]
-    #     inplanes = planes * block.expansion
-    #     for _ in range(1, blocks):
-    #         layers.append(block(inplanes, planes))
-    #     return nn.Sequential(*layers)
 
     def forward(self, x):
-        # x: [B, 112, 8, 8]
-        x = self.backbone(x)                 # → [B, 2048, 1, 1]
-        # x = F.adaptive_avg_pool2d(x, 1)      # → [B, 2048, 1, 1]
-        # x = x.view(x.size(0), -1)            # → [B, 2048]
-        # x = self.fc(x)                       # → [B, 256]
+        # x: [B, 224, 8, 8]
+        x = self.backbone(x)
         return x  
 
 
@@ -97,6 +79,16 @@ class TransformerEncoder(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=transformer_d_model, nhead=num_heads, dropout=dropout, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(transformer_d_model, transformer_d_model)
+        self.dropout = nn.Dropout(p=dropout)
+
+        self.cls_token = nn.Parameter(torch.randn(1, 1, transformer_d_model))
+        self.projection_head = nn.Sequential(
+            nn.Linear(transformer_d_model, transformer_d_model),
+            nn.ReLU(),
+            nn.Linear(transformer_d_model, transformer_d_model)
+        )
+        self.layernorm = nn.LayerNorm(transformer_d_model)
+        self.temperature = 0.07
 
     def forward(self, states, mask=None):
         """
@@ -115,6 +107,12 @@ class TransformerEncoder(nn.Module):
         state_emb = state_emb.view(batch_size, seq_len, -1)
 
         token_embeddings = self.pos_encoder(state_emb)
+        cls_token = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, d_model]
+        token_embeddings = torch.cat((cls_token, token_embeddings), dim=1)  # [batch, seq_len+1, d_model]
+
+        if mask is not None:
+            cls_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=mask.device)
+            mask = torch.cat((cls_mask, mask), dim=1)
 
         # Transformer 编码
         transformer_output = self.transformer_encoder(
@@ -122,27 +120,35 @@ class TransformerEncoder(nn.Module):
         )
 
         # 序列池化（聚合）
-        if mask is not None:
-            # False 表示有效位置
-            valid_mask = mask.unsqueeze(-1).float()  # [batch, seq_len, 1]
-            transformer_output = transformer_output * valid_mask
-            valid_counts = valid_mask.sum(dim=1)
-            pooled = transformer_output.sum(dim=1)
+        # if mask is not None:
+        #     # False 表示有效位置
+        #     valid_mask = mask.unsqueeze(-1).float()  # [batch, seq_len, 1]
+        #     transformer_output = transformer_output * valid_mask
+        #     valid_counts = valid_mask.sum(dim=1)
+        #     pooled = transformer_output.sum(dim=1)
 
-            # 对于全 padding 的样本，设置为 small vector，避免 pooled=0
-            pooled[valid_counts.squeeze(-1) == 0] = 1e-6
-            pooled = pooled / valid_counts.clamp(min=1)
-        else:
-            pooled = transformer_output.mean(dim=1)
+        #     # 对于全 padding 的样本，设置为 small vector，避免 pooled=0
+        #     pooled[valid_counts.squeeze(-1) == 0] = 1e-6
+
+        transformer_output = self.layernorm(transformer_output)
+        transformer_output = self.dropout(transformer_output)
+        #     pooled = pooled / valid_counts.clamp(min=1)
+        # else:
+        #     pooled = transformer_output.mean(dim=1)
+        pooled = transformer_output[:, 0]  # 使用 CLS token 输出
 
         # 输出风格向量
         final_embedding = self.fc(pooled)
 
+        final_embedding = self.dropout(final_embedding)
+
         # 防止除以 0 导致 nan
         norm = final_embedding.norm(p=2, dim=-1, keepdim=True)
         final_embedding = final_embedding / (norm + 1e-6)
+        final_embedding = final_embedding / self.temperature
 
-        return final_embedding
+        contrastive_embedding = self.projection_head(final_embedding)
+        return contrastive_embedding, final_embedding
     
 
 if __name__ == "__main__":
