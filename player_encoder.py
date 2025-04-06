@@ -94,7 +94,7 @@ class EncoderTrainer:
         model_params = self.encoder.parameters()
         self.optimizer = torch.optim.AdamW(
             model_params,
-            lr=1e-5,
+            lr=1e-4,
             weight_decay=1e-4
         )
         self.supcon_loss = SupConLoss(temperature=0.07)
@@ -166,8 +166,6 @@ class EncoderTrainer:
         total_correct = 0
         total_samples = 0
         batch_count = 0
-        total_score_linear = 0
-        total_score_exp = 0
         total_score_cosine = 0
         for batch in self.val_loader:
             batch_count += 1
@@ -186,10 +184,8 @@ class EncoderTrainer:
 
         avg_loss = total_loss / batch_count
         accuracy = total_correct / total_samples
-        avg_score_linear = total_score_linear / batch_count
-        avg_score_exp = total_score_exp / batch_count
         avg_score_cosine = total_score_cosine / batch_count
-        return avg_loss, accuracy, avg_score_linear, avg_score_exp, avg_score_cosine
+        return avg_loss, accuracy, avg_score_cosine
 
     def train(self, epochs=60, save_path="./models", model_idx=0):
         scaler = torch.GradScaler('cuda')
@@ -383,7 +379,7 @@ if __name__ == '__main__':
 
     trainer = EncoderTrainer(train_loader, val_loader, max_len=max_len)
 
-    save_path = "./models/model_2025_04_05_N_3_K_5_Q_5"
+    save_path = "./models/model_2025_04_06_N_3_K_5_Q_5_supconlosss"
     model_idx = 0
     os.makedirs(save_path, exist_ok=True)
 
