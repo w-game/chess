@@ -107,12 +107,12 @@ class TransformerEncoder(nn.Module):
         state_emb = state_emb.view(batch_size, seq_len, -1)
 
         token_embeddings = self.pos_encoder(state_emb)
-        cls_token = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, d_model]
-        token_embeddings = torch.cat((cls_token, token_embeddings), dim=1)  # [batch, seq_len+1, d_model]
+        # cls_token = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, d_model]
+        # token_embeddings = torch.cat((cls_token, token_embeddings), dim=1)  # [batch, seq_len+1, d_model]
 
-        if mask is not None:
-            cls_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=mask.device)
-            mask = torch.cat((cls_mask, mask), dim=1)
+        # if mask is not None:
+        #     cls_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=mask.device)
+        #     mask = torch.cat((cls_mask, mask), dim=1)
 
         # Transformer 编码
         transformer_output = self.transformer_encoder(
@@ -120,34 +120,34 @@ class TransformerEncoder(nn.Module):
         )
 
         # 序列池化（聚合）
-        # if mask is not None:
-        #     # False 表示有效位置
-        #     valid_mask = mask.unsqueeze(-1).float()  # [batch, seq_len, 1]
-        #     transformer_output = transformer_output * valid_mask
-        #     valid_counts = valid_mask.sum(dim=1)
-        #     pooled = transformer_output.sum(dim=1)
+        if mask is not None:
+            # False 表示有效位置
+            valid_mask = mask.unsqueeze(-1).float()  # [batch, seq_len, 1]
+            transformer_output = transformer_output * valid_mask
+            valid_counts = valid_mask.sum(dim=1)
+            pooled = transformer_output.sum(dim=1)
 
-        #     # 对于全 padding 的样本，设置为 small vector，避免 pooled=0
-        #     pooled[valid_counts.squeeze(-1) == 0] = 1e-6
+            # 对于全 padding 的样本，设置为 small vector，避免 pooled=0
+            pooled[valid_counts.squeeze(-1) == 0] = 1e-6
+            pooled = pooled / valid_counts.clamp(min=1)
+        else:
+            pooled = transformer_output.mean(dim=1)
 
-        transformer_output = self.layernorm(transformer_output)
-        transformer_output = self.dropout(transformer_output)
-        #     pooled = pooled / valid_counts.clamp(min=1)
-        # else:
-        #     pooled = transformer_output.mean(dim=1)
-        pooled = transformer_output[:, 0]  # 使用 CLS token 输出
+        # transformer_output = self.layernorm(transformer_output)
+        # transformer_output = self.dropout(transformer_output)
+        # pooled = transformer_output[:, 0]  # 使用 CLS token 输出
 
         # 输出风格向量
         final_embedding = self.fc(pooled)
-
         final_embedding = self.dropout(final_embedding)
 
         # 防止除以 0 导致 nan
         norm = final_embedding.norm(p=2, dim=-1, keepdim=True)
         final_embedding = final_embedding / (norm + 1e-6)
-        final_embedding = final_embedding / self.temperature
 
+        final_embedding = final_embedding / self.temperature
         contrastive_embedding = self.projection_head(final_embedding)
+        
         return contrastive_embedding, final_embedding
     
 
