@@ -78,6 +78,17 @@ def compute_similarity_percent_cosine(query_z, prototypes, labels):
     avg_similarity = similarity_percent.mean().item()
     return similarity_percent, avg_similarity
 
+def compute_proto_similarity(prototypes):
+    """
+    输入: prototypes: Tensor [N, D]
+    返回: 原型之间的平均余弦相似度（不含对角线）
+    """
+    norms = F.normalize(prototypes, dim=1)
+    sim_matrix = norms @ norms.T
+    N = sim_matrix.size(0)
+    mask = ~torch.eye(N, dtype=torch.bool, device=sim_matrix.device)
+    return sim_matrix[mask].mean().item()
+
 
 class EncoderTrainer:
     def __init__(self, train_loader, val_loader, test_loader=None, max_len=100):
@@ -122,6 +133,7 @@ class EncoderTrainer:
         total_correct = 0
         total_total = 0
         total_score_cosine = 0
+        total_similarity = 0
 
         for i in range(B):
             support_z = self.encoder(support_pos[i], support_mask[i])
@@ -151,6 +163,7 @@ class EncoderTrainer:
             total_loss += loss + 0.1 * supcon_loss
             total_correct += correct
             total_total += query_labels[i].size(0)
+            total_similarity += compute_proto_similarity(prototypes)
 
             similarity_percent, avg_similarity_cosine = compute_similarity_percent_cosine(query_z, prototypes, query_labels[i])
             total_score_cosine += avg_similarity_cosine
@@ -158,7 +171,7 @@ class EncoderTrainer:
             del support_z, query_z, logits, prototypes
             torch.cuda.empty_cache()
 
-        return total_loss / B, total_correct, total_total, total_score_cosine / B
+        return total_loss / B, total_correct, total_total, total_score_cosine / B, total_similarity / B
 
     @torch.no_grad()
     def val(self):
@@ -167,12 +180,13 @@ class EncoderTrainer:
         total_samples = 0
         batch_count = 0
         total_score_cosine = 0
+        total_similarity = 0
         for batch in self.val_loader:
             batch_count += 1
 
             support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
             with torch.autocast(device_type="cuda"):
-                loss, correct, total, score_cosin = self.task_proto_loss_and_acc(
+                loss, correct, total, score_cosin, similarity = self.task_proto_loss_and_acc(
                     support_pos, support_mask, support_labels,
                     query_pos, query_mask, query_labels
                 )
@@ -181,11 +195,12 @@ class EncoderTrainer:
             total_correct += correct
             total_samples += total
             total_score_cosine += score_cosin
+            total_similarity += similarity
 
         avg_loss = total_loss / batch_count
         accuracy = total_correct / total_samples
         avg_score_cosine = total_score_cosine / batch_count
-        return avg_loss, accuracy, avg_score_cosine
+        return avg_loss, accuracy, avg_score_cosine, total_similarity / batch_count
 
     def train(self, epochs=60, save_path="./models", model_idx=0):
         scaler = torch.GradScaler('cuda')
@@ -205,7 +220,7 @@ class EncoderTrainer:
                 support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
                     batch)
                 with torch.autocast(device_type="cuda"):
-                    loss, _, _, _ = self.task_proto_loss_and_acc(
+                    loss, _, _, _, _ = self.task_proto_loss_and_acc(
                         support_pos, support_mask, support_labels,
                         query_pos, query_mask, query_labels
                     )
@@ -231,12 +246,12 @@ class EncoderTrainer:
                 torch.cuda.empty_cache()
 
             avg_loss = total_loss / batch_count
-            avg_val_loss, val_acc, val_score_cosin = self.val()
+            avg_val_loss, val_acc, val_score_cosin, val_similarity = self.val()
 
             train_losses.append(avg_loss)
             val_losses.append(avg_val_loss)
 
-            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Cosine Score: {val_score_cosin:.4f}")
+            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Cosine Score: {val_score_cosin:.4f}, Val Similarity: {val_similarity:.4f}")
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
