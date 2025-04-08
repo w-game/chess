@@ -394,7 +394,7 @@ if __name__ == '__main__':
 
     trainer = EncoderTrainer(train_loader, val_loader, max_len=max_len)
 
-    save_path = "./models/model_2025_04_06_N_3_K_5_Q_5_supconlosss"
+    save_path = "./models/model_2025_04_07_N_5_K_5_Q_5_supconlosss"
     model_idx = 0
     os.makedirs(save_path, exist_ok=True)
 
