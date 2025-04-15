@@ -77,7 +77,7 @@ class AlphaZeroNet(nn.Module):
             nn.Conv2d(in_channels, 256, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            *nn.ModuleList([ResidualBlock(256) for _ in range(20)]),
+            *nn.ModuleList([ResidualBlock(256) for _ in range(6)]),
             nn.Conv2d(256, 2, kernel_size=1),
             nn.BatchNorm2d(2),
             nn.ReLU(inplace=True),

@@ -147,7 +147,7 @@ class TransformerEncoder(nn.Module):
 
         final_embedding = final_embedding / self.temperature
         contrastive_embedding = self.projection_head(final_embedding)
-        
+
         return contrastive_embedding, final_embedding
     
 
