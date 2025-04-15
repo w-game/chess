@@ -3,7 +3,7 @@ import numpy as np
 import chess
 from chess import Move
 import struct
-from lcztools._uci_to_idx import uci_to_idx as _uci_to_idx
+from _uci_to_idx import uci_to_idx as _uci_to_idx
 import zlib
 
 flat_planes = []

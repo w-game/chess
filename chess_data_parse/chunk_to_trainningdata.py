@@ -4,11 +4,19 @@ import random
 import gzip
 import struct
 import numpy as np
+import chess
 
 import torch
 
 from init_states import first_planes
 from multiprocessing import Pool, cpu_count
+from policy_index import policy_index
+
+import bz2
+import io
+import chess.pgn
+from leela_board import LeelaBoard
+from _uci_to_idx import uci_to_idx
 
 V4_VERSION = struct.pack('i', 4)
 V3_VERSION = struct.pack('i', 3)
@@ -141,8 +149,21 @@ def chunk_to_trainingdata(player_name):
     for color, records in zip(["white", "black"], [white_records, black_records]):
         matching_indices = []
 
+        chess_game = chess.Board()
+        planes, probs, winner, best_q = byte_to_np(records[0])
+        planes_1, probs_1, winner_1, best_q_1 = byte_to_np(records[0])
+
+        print(planes.shape)
+        print((planes == planes_1).sum())
+
         for i, record in enumerate(records):
             planes, probs, winner, best_q = byte_to_np(record)
+            action_idxs = torch.argmax(torch.tensor(probs)).item()
+            move_str = policy_index[action_idxs]
+            move = chess.Move.from_uci(move_str)
+            if move in chess_game.legal_moves:
+                print(move_str)
+                chess_game.push(move)
 
             for j in range(12):
                 if not np.allclose(planes[j], first_planes[j]):
@@ -193,6 +214,44 @@ def process_all_players(player_root="./players"):
         pool.map(chunk_to_trainingdata, player_names)
 
 
+def move_to_index(move, is_white, is_castling):
+    color = 0 if is_white else 2
+    castling_flag = 1 if is_castling else 0
+    dict_idx = color + castling_flag
+    index = uci_to_idx[dict_idx][str(move)]
+    return index
+
+
+def pgn_to_trainingdata(player_name):
+    output_dir = f"./dataset_2/{player_name}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    for color in ["white", "black"]:
+        with bz2.open(f"./players/{player_name}/{color}.pgn.bz2", mode="rt", encoding="utf-8") as compressed_file:
+            pgn_text = compressed_file.read()
+            pgn_io = io.StringIO(pgn_text)
+
+            while True:
+                game = chess.pgn.read_game(pgn_io)
+                if game is None:
+                    break
+
+                board = game.board()
+                lb = LeelaBoard()
+
+                features = []
+                actions = []
+                for move in game.mainline_moves():
+                    print(move, board.turn, board.is_castling(move))
+                    idx = move_to_index(move, board.turn, board.is_castling(move))
+                    print(idx)
+
+                    board.push(move)
+                    lb.push(move)
+                    features.append(lb.lcz_features())
+
 
 if __name__ == '__main__':
-    process_all_players()
+    # process_all_players()
+    # chunk_to_trainingdata("Demo")
+    pgn_to_trainingdata("Demo")
