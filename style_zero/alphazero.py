@@ -5,45 +5,11 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 from mcts import MCTS  # モンテカルロ木探索を実装したモジュール
-from network import AlphaZeroNet  # ポリシーとバリューヘッドを持つニューラルネットワーク
+# from network import AlphaZeroNet  # ポリシーとバリューヘッドを持つニューラルネットワーク
 import chess  # python-chessライブラリを使用してチェスのルールを実装
-from ..chess_data_parse.policy_index import policy_index
-
-class Game:
-    def __init__(self):
-        self.board = chess.Board()
-        self.history = []
-        self.result = None
-
-    def get_current_state(self):
-        # 将当前棋盘状态转换为 [112, 8, 8] 的张量
-        return encode_board(self.board)
-
-    def index_to_move(self, index):
-        return policy_index[index]
-
-    def get_legal_actions(self):
-        # 返回当前合法动作的索引列表
-        return [move_to_index(move) for move in self.board.legal_moves]
-
-    def play_action(self, action):
-        # 将动作索引转换为棋步并执行
-        torch.softmax(action, dim=-1)
-        move = self.index_to_move(action_index)
-        self.board.push(move)
-        self.history.append(move)
-
-    def is_game_over(self):
-        return self.board.is_game_over()
-
-    def get_winner(self):
-        result = self.board.result()
-        if result == '1-0':
-            return 1  # 白方胜
-        elif result == '0-1':
-            return -1  # 黑方胜
-        else:
-            return 0  # 平局
+# from ..chess_data_parse.policy_index import policy_index
+from _uci_to_idx import uci_to_idx, idx_to_uci
+from leela_board import LeelaBoard
 
 class AlphaZeroTrainer:
     def __init__(self, game_cls, network_cls, mcts_cls, config):
@@ -101,6 +67,18 @@ class AlphaZeroTrainer:
             self.train()
             # 必要に応じてモデルの保存や評価を行う
 
+def move_to_index(move, is_white, is_castling):
+    color = 0 if is_white else 2
+    castling_flag = 1 if is_castling else 0
+    dict_idx = color + castling_flag
+    index = uci_to_idx[dict_idx][str(move)]
+    return index
+
+def idx_to_move(index, is_white):
+    dict_idx = 0 if is_white else 1
+    move = idx_to_uci[dict_idx][index]
+    return move
+
 if __name__ == "__main__":
     # config = {
     #     'lr': 0.001,
@@ -114,9 +92,13 @@ if __name__ == "__main__":
 
     # trainer = AlphaZeroTrainer(Game, AlphaZeroNet, MCTS, config)
     # trainer.run()
-    game = torch.load('../chess_data_parse/dataset/demo/black_0000.pth')
+    game = torch.load('../chess_data_parse/dataset/a_ndre/black_0000.pt')
     states = game['states']  # [T, 112, 8, 8]
     actions = game['actions']  # [T]
     print(actions.shape, actions[0])
-    # chess_game = Game()
-    # chess_game.play_action(actions[0])
+    lb = LeelaBoard()
+    for action in actions:
+        move_idx = torch.argmax(action).item()
+        move = idx_to_move(move_idx, lb.turn)
+        print(move)
+        lb.push(chess.Move.from_uci(move))
