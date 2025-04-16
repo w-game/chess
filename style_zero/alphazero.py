@@ -74,7 +74,7 @@ class AlphaZeroTrainer:
 
     def self_play(self):
         game = self.game_cls()
-        mcts = self.mcts_cls(self.network, self.style_reward)
+        mcts = self.mcts_cls(self.network, self.style_reward, self.device, num_simulations=20, c_puct=1.0)
         states, pis = [], []
 
         step = 0
@@ -91,7 +91,7 @@ class AlphaZeroTrainer:
             action = game.board.idx_to_move(action_idx, game.board.turn)
             game.play_action(action)
 
-            states.append(state)
+            states.append(state.lcz_features())
             pis.append(pi)
 
         sim = self.style_reward(game.board.get_feature_sequence())

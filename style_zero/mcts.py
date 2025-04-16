@@ -24,8 +24,9 @@ def softmax(x):
 
 
 class MCTS:
-    def __init__(self, net, style_reward, num_simulations=50, c_puct=1.0):
+    def __init__(self, net, style_reward, device=None, num_simulations=20, c_puct=1.0):
         self.net = net
+        self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_simulations = num_simulations
         self.c_puct = c_puct
         self.reward = style_reward
@@ -62,15 +63,15 @@ class MCTS:
     def simulate(self, state, node):
         if state.is_game_over():
             features = state.get_feature_sequence()
-            reward = self.reward(features)
+            reward = self.reward(features, )
             print(f"Game over: {reward}")
             return reward
 
         if not node.children:
             features = state.lcz_features()
-            features = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
+            features = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
             policy_logits, value = self.net.forward(features)
-            policy = softmax(policy_logits.detach().numpy().flatten())
+            policy = softmax(policy_logits.detach().cpu().numpy().flatten())
             legal_moves = state.generate_legal_moves()
             for a in legal_moves:
                 a_idx = state.move_to_index(a, state.turn, state.is_castling(a))

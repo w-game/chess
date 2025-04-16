@@ -26,12 +26,12 @@ if __name__ == "__main__":
         max_seq_len=100
     )
 
-    alpha_zero_net = AlphaZeroNet()
 
     checkpoint = torch.load("../models/trained_model/player_encoder_60.pt")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     emb_net.to(device)
+    alpha_zero_net = AlphaZeroNet().to(device)
 
     trainer = AlphaZeroTrainer(Game, alpha_zero_net, emb_net, MCTS, config, device)
     trainer.run()
