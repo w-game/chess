@@ -41,24 +41,22 @@ class MCTS:
     def get_action_probabilities(self, game, temp=1.0):
         state = game.get_current_state()
         visits = self.run(state)
-        legal_moves = game.generate_legal_moves()
-        legal_indices = list(visits.keys())
         if temp == 0:
             best_action = max(visits.items(), key=lambda x: x[1])[0]
             probs = np.zeros(1858)
             probs[best_action] = 1.0
-            return probs, legal_indices
+            return probs
         else:
             legal_indices = list(visits.keys())
             counts = np.array([visits[a] for a in legal_indices], dtype=np.float32)
             if counts.sum() == 0:
-                return np.ones(1858) / 1858, legal_indices
+                return np.ones(1858) / 1858
             counts = counts ** (1.0 / temp)
             probs = np.zeros(1858, dtype=np.float32)
             for idx, count in zip(legal_indices, counts):
                 probs[idx] = count
             probs /= probs.sum()
-            return probs, legal_indices
+            return probs
 
     def simulate(self, state, node):
         if state.is_game_over():
