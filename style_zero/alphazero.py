@@ -85,6 +85,7 @@ class AlphaZeroTrainer:
 
         clipped_sim = max(min(raw_sim_val, s_max), s_min)  
         scaled_sim = (clipped_sim - s_min) / (s_max - s_min)
+        print(f"Raw similarity: {raw_sim_val}, Clipped similarity: {clipped_sim}, Scaled similarity: {scaled_sim}")
 
         return scaled_sim
 
@@ -97,16 +98,22 @@ class AlphaZeroTrainer:
 
         while not game.is_game_over() and step < 100:
             step += 1
-            state = game.get_current_state()
-            pi = mcts.get_action_probabilities(game, temp=self.config['temperature'])
-            # action_idx = np.random.choice(np.arange(1858), p=pi)
 
+            # action_idx = np.random.choice(np.arange(1858), p=pi)
             legal_move = game.generate_legal_moves()
-            legal_indices = [game.board.move_to_index(move, game.board.turn, game.board.is_castling(move)) for move in legal_move]
-            legal_p = pi[legal_indices]
-            legal_p = legal_p / np.sum(legal_p)  # 只对合法动作对应的概率做归一化
-            action_idx = np.random.choice(legal_indices, p=legal_p)
-            action = game.board.idx_to_move(action_idx, game.board.turn)
+
+            if game.board.turn:
+                state = game.get_current_state()
+                pi = mcts.get_action_probabilities(game, temp=self.config['temperature'])
+
+                legal_indices = [game.board.move_to_index(move, game.board.turn, game.board.is_castling(move)) for move in legal_move]
+                legal_p = pi[legal_indices]
+                legal_p = legal_p / np.sum(legal_p)  # 只对合法动作对应的概率做归一化
+                action_idx = np.random.choice(legal_indices, p=legal_p)
+                action = game.board.idx_to_move(action_idx, game.board.turn)
+            else:
+                action = random.choice(legal_move)
+                action = action.uci()
             game.play_action(action)
 
             states.append(state.lcz_features())
@@ -129,7 +136,7 @@ class AlphaZeroTrainer:
         target_zs = torch.tensor(zs, dtype=torch.float32).view(-1, 1).to(self.device)
 
         pred_pis, pred_zs = self.network(states)
-        loss_pi = nn.KLDivLoss()(torch.log(pred_pis), target_pis, reduction='batchmean')
+        loss_pi = nn.KLDivLoss(reduction='batchmean')(torch.log(pred_pis), target_pis)
         loss_z = nn.MSELoss()(pred_zs, target_zs)
         loss = loss_pi + loss_z
 
@@ -148,16 +155,3 @@ class AlphaZeroTrainer:
             self.train()
             # 必要に应对模型的保存或评估进行处理
 
-
-# if __name__ == "__main__":
-
-    # game = torch.load('../chess_data_parse/dataset/a_ndre/black_0000.pt')
-    # states = game['states']  # [T, 112, 8, 8]
-    # actions = game['actions']  # [T]
-    # print(actions.shape, actions[0])
-    # lb = LeelaBoard()
-    # for action in actions:
-    #     move_idx = torch.argmax(action).item()
-    #     move = idx_to_move(move_idx, lb.turn)
-    #     print(move)
-    #     lb.push(chess.Move.from_uci(move))
