@@ -124,7 +124,7 @@ class AlphaZeroTrainer:
         states, pis, zs = zip(*batch)
 
         states_np = np.array(states)
-        states = torch.from_numpy(states_np, dtype=torch.float32).to(self.device)
+        states = torch.from_numpy(states_np).to(dtype=torch.float32, device=self.device)
         target_pis = torch.tensor(pis, dtype=torch.float32).to(self.device)
         target_zs = torch.tensor(zs, dtype=torch.float32).view(-1, 1).to(self.device)
 
@@ -146,7 +146,7 @@ class AlphaZeroTrainer:
                 self.self_play()
                 print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed.")
             self.train()
-            # 必要に応じてモデルの保存や評価を行う
+            # 必要に应对模型的保存或评估进行处理
 
 
 # if __name__ == "__main__":
