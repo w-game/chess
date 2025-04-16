@@ -40,58 +40,21 @@ class Game:
 
 
 class AlphaZeroTrainer:
-    def __init__(self, game_cls, network_cls, emb_net, mcts_cls, config, device=None):
+    def __init__(self, game_cls, net_a, net_b, reward_fc, mcts_cls, config, device=None):
         self.game_cls = game_cls
-        self.network = network_cls
-        self.emb_net = emb_net
+        self.net_a = net_a
+        self.net_b = net_b
+        self.reward_fc = reward_fc
         self.mcts_cls = mcts_cls
         self.config = config
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.optimizer = optim.Adam(self.network.parameters(), lr=config['lr'])
+        self.optimizer_a = optim.Adam(self.net_a.parameters(), lr=config['lr'])
+        self.optimizer_b = optim.Adam(self.net_b.parameters(), lr=config['lr'])
         self.memory = deque(maxlen=config['memory_size'])
-        self.target_style_embedding = torch.randn(256).to(self.device)  # 示例目标风格，可改为真实风格向量
-
-    def style_reward(self, game, color=True, s_min=0.2, s_max=0.9):
-        """
-        计算风格相似度并进行Min-Max缩放映射到[0,1]。
-        :param game: 棋局特征序列
-        :param color: True表示对白方动作做风格分析，False表示对黑方
-        :param s_min: 相似度分布可能出现的“最小值”
-        :param s_max: 相似度分布可能出现的“最大值”
-        :return: 缩放后的风格奖励 (0~1)
-        """
-        T = len(game)
-        if color:
-            indices = range(0, T - 1, 2)
-        else:
-            indices = range(1, T - 1, 2)
-
-        states = []
-        for _, i in enumerate(indices):
-            s_t = game[i]
-            s_tp1 = game[i + 1]
-            s_pair = np.concatenate([s_t, s_tp1], axis=0)
-            states.append(s_pair)
-
-        states = np.stack(states, axis=0)  
-
-        state_tensor = torch.tensor(states, dtype=torch.float32).unsqueeze(0).to(self.device)
-        style_emb = self.target_style_embedding
-        _, pred_emb = self.emb_net(state_tensor)
-
-        # 计算原相似度
-        raw_sim = torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0), dim=1).mean()
-        raw_sim_val = raw_sim.item()
-
-        clipped_sim = max(min(raw_sim_val, s_max), s_min)  
-        scaled_sim = (clipped_sim - s_min) / (s_max - s_min)
-        print(f"Raw similarity: {raw_sim_val}, Clipped similarity: {clipped_sim}, Scaled similarity: {scaled_sim}")
-
-        return scaled_sim
 
     def self_play(self):
         game = self.game_cls()
-        mcts = self.mcts_cls(self.network, self.style_reward, self.device, num_simulations=20, c_puct=1.0)
+        mcts = self.mcts_cls(self.net_a, self.net_b, self.reward_fc, self.device, num_simulations=20, c_puct=1.0)
         states, pis = [], []
 
         step = 0
@@ -99,52 +62,73 @@ class AlphaZeroTrainer:
         while not game.is_game_over() and step < 100:
             step += 1
 
-            # action_idx = np.random.choice(np.arange(1858), p=pi)
             legal_move = game.generate_legal_moves()
 
-            if game.board.turn:
-                state = game.get_current_state()
-                pi = mcts.get_action_probabilities(game, temp=self.config['temperature'])
+            state = game.get_current_state()
+            pi = mcts.get_action_probabilities(state, temp=self.config['temperature'])
 
-                legal_indices = [game.board.move_to_index(move, game.board.turn, game.board.is_castling(move)) for move in legal_move]
-                legal_p = pi[legal_indices]
-                legal_p = legal_p / np.sum(legal_p)  # 只对合法动作对应的概率做归一化
-                action_idx = np.random.choice(legal_indices, p=legal_p)
-                action = game.board.idx_to_move(action_idx, game.board.turn)
-            else:
-                action = random.choice(legal_move)
-                action = action.uci()
+            legal_indices = [game.board.move_to_index(move, game.board.turn, game.board.is_castling(move)) for move in legal_move]
+            legal_p = pi[legal_indices]
+            legal_p = legal_p / np.sum(legal_p)
+            action_idx = np.random.choice(legal_indices, p=legal_p)
+            action = game.board.idx_to_move(action_idx, game.board.turn)
             game.play_action(action)
 
             states.append(state.lcz_features())
             pis.append(pi)
 
-        sim = self.style_reward(game.board.get_feature_sequence())
-        for state, pi in zip(states, pis):
-            self.memory.append((state, pi, sim))  # winner should be replaced with sim
+        sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
+        sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
+        for idx, (state, pi) in enumerate(zip(states, pis)):
+            sim = sim_a if idx % 2 == 0 else sim_b
+            self.memory.append((state, pi, sim, idx % 2 == 0))  # winner should be replaced with sim
 
     def train(self):
         if len(self.memory) < self.config['batch_size']:
             return
 
         batch = random.sample(self.memory, self.config['batch_size'])
-        states, pis, zs = zip(*batch)
+        states, pis, zs, is_white = zip(*batch)
 
-        states_np = np.array(states)
-        states = torch.from_numpy(states_np).to(dtype=torch.float32, device=self.device)
-        target_pis = torch.tensor(pis, dtype=torch.float32).to(self.device)
-        target_zs = torch.tensor(zs, dtype=torch.float32).view(-1, 1).to(self.device)
+        states_white = [torch.tensor(state) for state, is_white in zip(states, is_white) if is_white]
+        pis_white = [torch.tensor(pi) for pi, is_white in zip(pis, is_white) if is_white]
+        zs_white = [torch.tensor(z) for z, is_white in zip(zs, is_white) if is_white]
 
-        pred_pis, pred_zs = self.network(states)
+        states_white = torch.stack(states_white, dim=0).to(dtype=torch.float32, device=self.device)
+        target_pis = torch.stack(pis_white, dim=0).to(dtype=torch.float32, device=self.device)
+        target_zs = torch.stack(zs_white, dim=0).to(dtype=torch.float32, device=self.device).view(-1, 1)
+
+        print(states_white.shape, target_pis.shape, target_zs.shape)
+        pred_pis, pred_zs = self.net_a(states_white)
         loss_pi = nn.KLDivLoss(reduction='batchmean')(torch.log(pred_pis), target_pis)
         loss_z = nn.MSELoss()(pred_zs, target_zs)
         loss = loss_pi + loss_z
 
-        print(f"Loss: {loss.item()}")
-
-        self.optimizer.zero_grad()
+        self.optimizer_a.zero_grad()
         loss.backward()
-        self.optimizer.step()
+        self.optimizer_a.step()
+        print(f"Loss A: {loss.item()}")
+
+        # 训练B网络
+        states_black = [torch.tensor(state) for state, is_white in zip(states, is_white) if not is_white]
+        pis_black = [torch.tensor(pi) for pi, is_white in zip(pis, is_white) if not is_white]
+        zs_black = [torch.tensor(z) for z, is_white in zip(zs, is_white) if not is_white]
+
+        states_black = torch.stack(states_black, dim=0).to(dtype=torch.float32, device=self.device)
+        target_pis = torch.stack(pis_black, dim=0).to(dtype=torch.float32, device=self.device)
+        target_zs = torch.stack(zs_black, dim=0).to(dtype=torch.float32, device=self.device).view(-1, 1)
+
+        print(states_black.shape, target_pis.shape, target_zs.shape)
+        pred_pis, pred_zs = self.net_b(states_black)
+        loss_pi = nn.KLDivLoss(reduction='batchmean')(torch.log(pred_pis), target_pis)
+        loss_z = nn.MSELoss()(pred_zs, target_zs)
+        loss = loss_pi + loss_z
+
+        self.optimizer_b.zero_grad()
+        loss.backward()
+        self.optimizer_b.step()
+        print(f"Loss B: {loss.item()}")
+
 
     def run(self):
         for iteration in range(self.config['num_iterations']):
