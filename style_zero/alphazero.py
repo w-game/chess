@@ -121,7 +121,6 @@ class AlphaZeroTrainer:
         target_pis = torch.stack(pis_black, dim=0).to(dtype=torch.float32, device=self.device)
         target_zs = torch.stack(zs_black, dim=0).to(dtype=torch.float32, device=self.device).view(-1, 1)
 
-        print(states_black.shape, target_pis.shape, target_zs.shape)
         logits, pred_zs = self.net_b(states_black)
         log_pis = F.log_softmax(logits, dim=1)
         loss_pi = F.kl_div(log_pis, target_pis, reduction='batchmean')
@@ -142,4 +141,9 @@ class AlphaZeroTrainer:
                 print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed.")
             self.train()
             # 必要に应对模型的保存或评估进行处理
+
+            if (iteration + 1) % self.config['save_interval'] == 0:
+                torch.save(self.net_a.state_dict(), f"./models/model_a_{iteration + 1}.pth")
+                torch.save(self.net_b.state_dict(), f"./models/model_b_{iteration + 1}.pth")
+                print(f"Models saved at iteration {iteration + 1}.")
 

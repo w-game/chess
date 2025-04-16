@@ -38,10 +38,10 @@ def style_reward(game, color=True, s_min=0.2, s_max=0.9):
     raw_sim = torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0), dim=1).mean()
     raw_sim_val = raw_sim.item()
 
-    clipped_sim = max(min(raw_sim_val, s_max), s_min)  
-    scaled_sim = (clipped_sim - s_min) / (s_max - s_min)
+    # clipped_sim = max(min(raw_sim_val, s_max), s_min)  
+    # scaled_sim = (clipped_sim - s_min) / (s_max - s_min)
 
-    return scaled_sim
+    return raw_sim_val
 
 def flip_uci_180(uci: str) -> str:
     """
@@ -74,6 +74,8 @@ if __name__ == "__main__":
         'num_iterations': 1000,
         'num_self_play_games': 25,
         'temperature': 1.0,
+        'num_simulations': 20,
+        'save_interval': 5
         # その他のハイパーパラメータ
     }
 
