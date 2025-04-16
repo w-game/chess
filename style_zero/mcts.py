@@ -36,25 +36,31 @@ class MCTS:
     def simulate(self, state, node):
         if state.is_game_over():
             features = state.get_feature_sequence()
-            reward = self.reward_fc(features, state.turn)
-            print(f"Game over: {reward}")
-            return reward
+            if state.turn:
+                # 如果当前是白方的回合，则黑胜利，最后一手为黑方
+                reward = self.reward_fc(features, False)
+            else:
+                # 如果当前是黑方的回合，则白胜利，最后一手为白方
+                reward = self.reward_fc(features, True)
+            print(f"Game over: value = {reward}")
+            return reward, not state.turn
 
         if not node.children:
             features = state.lcz_features()
             features = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
 
             if state.turn:
-                policy_logits, value = self.net_a.forward(features)
+                policy_logits, v = self.net_a.forward(features)
             else:
-                policy_logits, value = self.net_b.forward(features)
+                policy_logits, v = self.net_b.forward(features)
 
             policy = softmax(policy_logits.detach().cpu().numpy().flatten())
             legal_moves = state.generate_legal_moves()
             for a in legal_moves:
                 a_idx = state.move_to_index(a, state.turn, state.is_castling(a))
                 node.children[a_idx] = TreeNode(node, policy[a_idx])
-            return value.item()
+
+            return v, not state.turn
 
         best_score, best_action_idx = -float('inf'), None
         for a, child in node.children.items():
@@ -66,13 +72,13 @@ class MCTS:
         real_action = state.idx_to_move(best_action_idx, state.turn)
         state.push_uci(real_action)
         next_state = state.copy()
-        v = self.simulate(next_state, node.children[best_action_idx])
+        v, is_white = self.simulate(next_state, node.children[best_action_idx])
 
         child = node.children[best_action_idx]
-        child.visit_count += 1
-        child.total_value += v
-        node.visit_count += 1
-        return v
+        if state.turn == is_white:
+            child.total_value += v
+            child.visit_count += 1
+        return v, is_white
     
     def run(self, state):
         root = TreeNode(None, 1.0)
