@@ -7,6 +7,8 @@ from collections import deque
 import chess
 from leela_board import LeelaBoard
 
+from torch import functional as F
+
 
 class Game:
     def __init__(self):
@@ -98,10 +100,10 @@ class AlphaZeroTrainer:
         target_pis = torch.stack(pis_white, dim=0).to(dtype=torch.float32, device=self.device)
         target_zs = torch.stack(zs_white, dim=0).to(dtype=torch.float32, device=self.device).view(-1, 1)
 
-        print(states_white.shape, target_pis.shape, target_zs.shape)
-        pred_pis, pred_zs = self.net_a(states_white)
-        loss_pi = nn.KLDivLoss(reduction='batchmean')(torch.log(pred_pis), target_pis)
-        loss_z = nn.MSELoss()(pred_zs, target_zs)
+        logits, pred_zs = self.net_a(states_white)
+        log_pis = F.log_softmax(logits, dim=1)
+        loss_pi = F.kl_div(log_pis, target_pis, reduction='batchmean')
+        loss_z = F.mse_loss(pred_zs, target_zs)
         loss = loss_pi + loss_z
 
         self.optimizer_a.zero_grad()
@@ -119,9 +121,10 @@ class AlphaZeroTrainer:
         target_zs = torch.stack(zs_black, dim=0).to(dtype=torch.float32, device=self.device).view(-1, 1)
 
         print(states_black.shape, target_pis.shape, target_zs.shape)
-        pred_pis, pred_zs = self.net_b(states_black)
-        loss_pi = nn.KLDivLoss(reduction='batchmean')(torch.log(pred_pis), target_pis)
-        loss_z = nn.MSELoss()(pred_zs, target_zs)
+        logits, pred_zs = self.net_b(states_black)
+        log_pis = F.log_softmax(logits, dim=1)
+        loss_pi = F.kl_div(log_pis, target_pis, reduction='batchmean')
+        loss_z = F.mse_loss(pred_zs, target_zs)
         loss = loss_pi + loss_z
 
         self.optimizer_b.zero_grad()
