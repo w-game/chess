@@ -46,15 +46,30 @@ class AlphaZeroTrainer:
         self.emb_net = emb_net
         self.mcts_cls = mcts_cls
         self.config = config
+        self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.optimizer = optim.Adam(self.network.parameters(), lr=config['lr'])
         self.memory = deque(maxlen=config['memory_size'])
-        self.target_style_embedding = torch.randn(256)  # 示例目标风格，可改为真实风格向量
+        self.target_style_embedding = torch.randn(256).to(self.device)  # 示例目标风格，可改为真实风格向量
 
-    def style_reward(self, game):
-        # 示例实现：从状态中提取 embedding 与目标风格 embedding 的相似度（示意）
-        state_tensor = torch.tensor(game, dtype=torch.float32).unsqueeze(0)
-        style_emb = self.target_style_embedding  # 假设已定义为目标玩家 embedding
-        pred_emb = self.emb_net.encode(state_tensor)
+    def style_reward(self, game, color=True):
+        T = len(game)
+        if color:
+            indices = range(0, T - 1, 2)  # 白方下在偶数步
+        else:
+            indices = range(1, T - 1, 2)  # 黑方下在奇数步
+
+        states = []
+        for _, i in enumerate(indices):
+            s_t = game[i]
+            s_tp1 = game[i + 1]
+            s_pair = np.concatenate([s_t, s_tp1], axis=0)
+            states.append(s_pair)
+
+        states = np.stack(states, axis=0)
+        
+        state_tensor = torch.tensor(states, dtype=torch.float32).unsqueeze(0).to(self.device)
+        style_emb = self.target_style_embedding
+        _, pred_emb = self.emb_net(state_tensor)
         return torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0)).item()
 
     def self_play(self):
@@ -62,7 +77,10 @@ class AlphaZeroTrainer:
         mcts = self.mcts_cls(self.network, self.style_reward)
         states, pis = [], []
 
-        while not game.is_game_over():
+        step = 0
+
+        while not game.is_game_over() and step < 100:
+            step += 1
             state = game.get_current_state()
             pi, legal_indices = mcts.get_action_probabilities(game, temp=self.config['temperature'])
             # action_idx = np.random.choice(np.arange(1858), p=pi)

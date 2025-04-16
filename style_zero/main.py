@@ -28,7 +28,7 @@ if __name__ == "__main__":
 
     alpha_zero_net = AlphaZeroNet()
 
-    checkpoint = torch.load("../models/trained_model/player_encoder_600.pt")
+    checkpoint = torch.load("../models/trained_model/player_encoder_60.pt")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     emb_net.to(device)
