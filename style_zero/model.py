@@ -46,7 +46,7 @@ class AlphaZeroNet(nn.Module):
         )
 
     def forward(self, x):
-        x = self.conv(x).view(x.size(0), -1)
+        x = self.bonenet(x)
         policy = self.policy_head(x)
         value = self.value_head(x)
         return policy, value

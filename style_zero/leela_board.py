@@ -5,28 +5,33 @@ from chess import Move
 import struct
 from _uci_to_idx import uci_to_idx as _uci_to_idx
 import zlib
+from _uci_to_idx import uci_to_idx, idx_to_uci
 
 flat_planes = []
 for i in range(256):
-    flat_planes.append(np.ones((8,8), dtype=np.uint8)*i)
+    flat_planes.append(np.ones((8, 8), dtype=np.uint8) * i)
 
 LeelaBoardData = collections.namedtuple('LeelaBoardData',
                                         'plane_bytes repetition '
                                         'transposition_key us_ooo us_oo them_ooo them_oo '
                                         'side_to_move rule50_count')
 
+
 def pc_board_property(propertyname):
     '''Create a property based on self.pc_board'''
+
     def prop(self):
         return getattr(self.pc_board, propertyname)
+
     return property(prop)
+
 
 class LeelaBoard:
     turn = pc_board_property('turn')
     move_stack = pc_board_property('move_stack')
     _plane_bytes_struct = struct.Struct('>Q')
 
-    def __init__(self, leela_board = None, *args, **kwargs):
+    def __init__(self, leela_board=None, *args, **kwargs):
         '''If leela_board is passed as an argument, return a copy'''
         self.pc_board = chess.Board(*args, **kwargs)
         self.lcz_stack = []
@@ -36,14 +41,30 @@ class LeelaBoard:
         self.can_claim_draw = self.pc_method('can_claim_draw')
         self.generate_legal_moves = self.pc_method('generate_legal_moves')
 
+    def move_to_index(self, move, is_white, is_castling):
+        move_str = str(move)
+
+        if len(move_str) == 5 and move_str[-1] in ['n', 'r', 'b']:
+            move_str = move_str[:-1] + 'q'
+
+        color = 0 if is_white else 2
+        castling_flag = 1 if is_castling else 0
+        dict_idx = color + castling_flag
+        index = uci_to_idx[dict_idx][move_str]
+        return index
+
+    def idx_to_move(self, index, is_white):
+        dict_idx = 0 if is_white else 1
+        move = idx_to_uci[dict_idx][index]
+        return move
+
     def copy(self, history=7):
         """Note! Currently the copy constructor uses pc_board.copy(stack=False), which makes pops impossible"""
         cls = type(self)
         copied = cls.__new__(cls)
         copied.pc_board = self.pc_board.copy(stack=False)
-        copied.pc_board.stack[:] = self.pc_board.stack[-history:]
-        copied.pc_board.move_stack[:] = self.pc_board.move_stack[-history:]
-        copied.lcz_stack = self.lcz_stack[-history:]
+        copied.pc_board.move_stack = self.pc_board.move_stack.copy()
+        copied.lcz_stack = self.lcz_stack.copy()
         copied._lcz_transposition_counter = self._lcz_transposition_counter.copy()
         copied.is_game_over = copied.pc_method('is_game_over')
         copied.can_claim_draw = copied.pc_method('can_claim_draw')
@@ -84,12 +105,15 @@ class LeelaBoard:
         self._lcz_transposition_counter.subtract((_lcz_data.transposition_key,))
         return result
 
+    def is_castling(self, move):
+        return self.pc_board.is_castling(move)
+
     def _plane_bytes_iter(self):
         """Get plane bytes... used for _lcz_push"""
         pack = self._plane_bytes_struct.pack
         pieces_mask = self.pc_board.pieces_mask
         for color in (True, False):
-            for piece_type in range(1,7):
+            for piece_type in range(1, 7):
                 byts = pack(pieces_mask(piece_type, color))
                 yield byts
 
@@ -105,16 +129,16 @@ class LeelaBoard:
         if not side_to_move:
             # we're white
             _c = self.pc_board.castling_rights
-            us_ooo, us_oo = (_c>>chess.A1) & 1, (_c>>chess.H1) & 1
-            them_ooo, them_oo = (_c>>chess.A8) & 1, (_c>>chess.H8) & 1
+            us_ooo, us_oo = (_c >> chess.A1) & 1, (_c >> chess.H1) & 1
+            them_ooo, them_oo = (_c >> chess.A8) & 1, (_c >> chess.H8) & 1
         else:
             # We're black
             _c = self.pc_board.castling_rights
-            us_ooo, us_oo = (_c>>chess.A8) & 1, (_c>>chess.H8) & 1
-            them_ooo, them_oo = (_c>>chess.A1) & 1, (_c>>chess.H1) & 1
+            us_ooo, us_oo = (_c >> chess.A8) & 1, (_c >> chess.H8) & 1
+            them_ooo, them_oo = (_c >> chess.A1) & 1, (_c >> chess.H1) & 1
         # Create 13 planes... 6 us, 6 them, repetitions>=1
         plane_bytes = b''.join(self._plane_bytes_iter())
-        repetition = (repetitions>=1)
+        repetition = (repetitions >= 1)
         lcz_data = LeelaBoardData(
             plane_bytes, repetition=repetition,
             transposition_key=transposition_key,
@@ -130,6 +154,7 @@ class LeelaBoard:
         bytes_false_true = bytes([False]), bytes([True])
         bytes_per_history = 97
         total_plane_bytes = bytes_per_history * 8
+
         def bytes_iter():
             plane_bytes_yielded = 0
             for data in self.lcz_stack[-1:-9:-1]:
@@ -145,7 +170,20 @@ class LeelaBoard:
                                curdata.them_oo,
                                curdata.side_to_move)).tobytes()
             yield chr(curdata.rule50_count).encode()
+
         return b''.join(bytes_iter())
+
+    def get_feature_sequence(self):
+        """返回一整盘棋的特征序列 [T, C, H, W]"""
+        temp_board = LeelaBoard()
+        feature_list = []
+
+        for move in self.pc_board.move_stack:
+            temp_board.push(move)
+            features = temp_board.lcz_features()  # shape: [112, 8, 8]
+            feature_list.append(features)
+
+        return np.stack(feature_list)
 
     @classmethod
     def deserialize_features(cls, serialized):
@@ -154,9 +192,9 @@ class LeelaBoard:
         board_attrs = np.unpackbits(memoryview(serialized[-2:-1]))  # second to last byte
         us_ooo, us_oo, them_ooo, them_oo, side_to_move = board_attrs[:5]
         bytes_per_history = 97
-        for history_idx in range(0, bytes_per_history*8, bytes_per_history):
-            plane_bytes = serialized[history_idx:history_idx+96]
-            repetition = serialized[history_idx+96]
+        for history_idx in range(0, bytes_per_history * 8, bytes_per_history):
+            plane_bytes = serialized[history_idx:history_idx + 96]
+            repetition = serialized[history_idx + 96]
             if not side_to_move:
                 # we're white
                 planes = (np.unpackbits(memoryview(plane_bytes))[::-1]
@@ -165,8 +203,8 @@ class LeelaBoard:
                 # We're black
                 planes = (np.unpackbits(memoryview(plane_bytes))[::-1]
                           .reshape(12, 8, 8)[::-1]
-                          .reshape(2,6,8,8)[::-1,:,::-1]
-                          .reshape(12, 8,8))
+                          .reshape(2, 6, 8, 8)[::-1, :, ::-1]
+                          .reshape(12, 8, 8))
             planes_stack.append(planes)
             planes_stack.append([flat_planes[repetition]])
         planes_stack.append([flat_planes[us_ooo],
@@ -196,12 +234,12 @@ class LeelaBoard:
                 # We're black
                 planes = (np.unpackbits(memoryview(plane_bytes))[::-1]
                           .reshape(12, 8, 8)[::-1]
-                          .reshape(2,6,8,8)[::-1,:,::-1]
-                          .reshape(12, 8,8))
+                          .reshape(2, 6, 8, 8)[::-1, :, ::-1]
+                          .reshape(12, 8, 8))
             planes_stack.append(planes)
             planes_stack.append([flat_planes[data.repetition]])
             planes_yielded += 13
-        empty_planes = [flat_planes[0] for _ in range(104-planes_yielded)]
+        empty_planes = [flat_planes[0] for _ in range(104 - planes_yielded)]
         if empty_planes:
             planes_stack.append(empty_planes)
         # Yield the rest of the constant planes
@@ -229,7 +267,7 @@ class LeelaBoard:
         #  White, castling => 1
         #  Black, no-castling => 2
         #  Black, castling => 3
-        uci_to_idx_index = (data.us_ooo | data.us_oo) +  2*data.side_to_move
+        uci_to_idx_index = (data.us_ooo | data.us_oo) + 2 * data.side_to_move
         uci_idx_dct = _uci_to_idx[uci_to_idx_index]
         return [uci_idx_dct[m] for m in uci_list]
 
@@ -240,7 +278,7 @@ class LeelaBoard:
         # Simple compression would do this...
         # return zlib.compress(features_8)
         piece_plane_bytes = np.packbits(features_8[:-8]).tobytes()
-        scalar_bytes = features_8[-8:][:,0,0].tobytes()
+        scalar_bytes = features_8[-8:][:, 0, 0].tobytes()
         compressed = zlib.compress(piece_plane_bytes + scalar_bytes)
         return compressed
 
@@ -254,7 +292,7 @@ class LeelaBoard:
         scalar_bytes = decompressed[-8:]
         piece_plane_arr = np.unpackbits(memoryview(piece_plane_bytes))
         scalar_arr = np.frombuffer(scalar_bytes, dtype=np.uint8).repeat(64)
-        result = np.concatenate((piece_plane_arr, scalar_arr)).astype(np.float32).reshape(-1,8,8)
+        result = np.concatenate((piece_plane_arr, scalar_arr)).astype(np.float32).reshape(-1, 8, 8)
         return result
 
     def unicode(self):

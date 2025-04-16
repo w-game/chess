@@ -4,40 +4,81 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
-from mcts import MCTS  # モンテカルロ木探索を実装したモジュール
-# from network import AlphaZeroNet  # ポリシーとバリューヘッドを持つニューラルネットワーク
-import chess  # python-chessライブラリを使用してチェスのルールを実装
-# from ..chess_data_parse.policy_index import policy_index
-from _uci_to_idx import uci_to_idx, idx_to_uci
+import chess
 from leela_board import LeelaBoard
 
+
+class Game:
+    def __init__(self):
+        self.board = LeelaBoard()
+        self.current_player = 0
+
+    def get_current_state(self):
+        return self.board.copy()
+
+    def play_action(self, action):
+        move = chess.Move.from_uci(action)
+        if move in self.board.generate_legal_moves():
+            self.board.push(move)
+            self.current_player = 1 - self.current_player
+        else:
+            raise ValueError("Illegal move")
+
+    def is_game_over(self):
+        return self.board.is_game_over()
+
+    def get_winner(self):
+        if self.board.is_checkmate():
+            return 1 if self.current_player == 0 else -1
+        elif self.board.is_stalemate() or self.board.is_insufficient_material():
+            return 0
+        else:
+            return None
+
+    def generate_legal_moves(self):
+        return list(self.board.generate_legal_moves())
+
+
 class AlphaZeroTrainer:
-    def __init__(self, game_cls, network_cls, mcts_cls, config):
+    def __init__(self, game_cls, network_cls, emb_net, mcts_cls, config, device=None):
         self.game_cls = game_cls
-        self.network = network_cls()
+        self.network = network_cls
+        self.emb_net = emb_net
         self.mcts_cls = mcts_cls
         self.config = config
         self.optimizer = optim.Adam(self.network.parameters(), lr=config['lr'])
         self.memory = deque(maxlen=config['memory_size'])
+        self.target_style_embedding = torch.randn(256)  # 示例目标风格，可改为真实风格向量
+
+    def style_reward(self, game):
+        # 示例实现：从状态中提取 embedding 与目标风格 embedding 的相似度（示意）
+        state_tensor = torch.tensor(game, dtype=torch.float32).unsqueeze(0)
+        style_emb = self.target_style_embedding  # 假设已定义为目标玩家 embedding
+        pred_emb = self.emb_net.encode(state_tensor)
+        return torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0)).item()
 
     def self_play(self):
         game = self.game_cls()
-        mcts = self.mcts_cls(self.network, self.config)
-        states, pis, zs = [], [], []
+        mcts = self.mcts_cls(self.network, self.style_reward)
+        states, pis = [], []
 
         while not game.is_game_over():
             state = game.get_current_state()
-            pi = mcts.get_action_probabilities(game, temp=self.config['temperature'])
-            action = np.random.choice(len(pi), p=pi)
+            pi, legal_indices = mcts.get_action_probabilities(game, temp=self.config['temperature'])
+            # action_idx = np.random.choice(np.arange(1858), p=pi)
+
+            legal_p = pi[legal_indices]
+            legal_p = legal_p / np.sum(legal_p)  # 只对合法动作对应的概率做归一化
+            action_idx = np.random.choice(legal_indices, p=legal_p)
+            action = game.board.idx_to_move(action_idx, game.board.turn)
             game.play_action(action)
 
             states.append(state)
             pis.append(pi)
 
-        winner = game.get_winner()
+        sim = self.style_reward(game.board.get_feature_sequence())
         for state, pi in zip(states, pis):
-            zs.append(winner)
-            self.memory.append((state, pi, winner))
+            self.memory.append((state, pi, sim))  # winner should be replaced with sim
 
     def train(self):
         if len(self.memory) < self.config['batch_size']:
@@ -62,43 +103,22 @@ class AlphaZeroTrainer:
     def run(self):
         for iteration in range(self.config['num_iterations']):
             print(f"Iteration {iteration + 1}/{self.config['num_iterations']}")
-            for _ in range(self.config['num_self_play_games']):
+            for idx in range(self.config['num_self_play_games']):
                 self.self_play()
+                print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed.")
             self.train()
             # 必要に応じてモデルの保存や評価を行う
 
-def move_to_index(move, is_white, is_castling):
-    color = 0 if is_white else 2
-    castling_flag = 1 if is_castling else 0
-    dict_idx = color + castling_flag
-    index = uci_to_idx[dict_idx][str(move)]
-    return index
 
-def idx_to_move(index, is_white):
-    dict_idx = 0 if is_white else 1
-    move = idx_to_uci[dict_idx][index]
-    return move
+# if __name__ == "__main__":
 
-if __name__ == "__main__":
-    # config = {
-    #     'lr': 0.001,
-    #     'memory_size': 10000,
-    #     'batch_size': 64,
-    #     'num_iterations': 1000,
-    #     'num_self_play_games': 25,
-    #     'temperature': 1.0,
-    #     # その他のハイパーパラメータ
-    # }
-
-    # trainer = AlphaZeroTrainer(Game, AlphaZeroNet, MCTS, config)
-    # trainer.run()
-    game = torch.load('../chess_data_parse/dataset/a_ndre/black_0000.pt')
-    states = game['states']  # [T, 112, 8, 8]
-    actions = game['actions']  # [T]
-    print(actions.shape, actions[0])
-    lb = LeelaBoard()
-    for action in actions:
-        move_idx = torch.argmax(action).item()
-        move = idx_to_move(move_idx, lb.turn)
-        print(move)
-        lb.push(chess.Move.from_uci(move))
+    # game = torch.load('../chess_data_parse/dataset/a_ndre/black_0000.pt')
+    # states = game['states']  # [T, 112, 8, 8]
+    # actions = game['actions']  # [T]
+    # print(actions.shape, actions[0])
+    # lb = LeelaBoard()
+    # for action in actions:
+    #     move_idx = torch.argmax(action).item()
+    #     move = idx_to_move(move_idx, lb.turn)
+    #     print(move)
+    #     lb.push(chess.Move.from_uci(move))
