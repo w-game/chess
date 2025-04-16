@@ -40,9 +40,31 @@ def style_reward(game, color=True, s_min=0.2, s_max=0.9):
 
     clipped_sim = max(min(raw_sim_val, s_max), s_min)  
     scaled_sim = (clipped_sim - s_min) / (s_max - s_min)
-    print(f"Raw similarity: {raw_sim_val}, Clipped similarity: {clipped_sim}, Scaled similarity: {scaled_sim}")
 
     return scaled_sim
+
+def flip_uci_180(uci: str) -> str:
+    """
+    将形如 'e2e4' 的“白方视角”UCI 翻转成“黑方真实”UCI，比如 'e2e4' → 'e7e5'。
+    若含升变字符 (如 'e7e8q')，也保持不变地加回末尾。
+    """
+    # 提取起点、终点、(可选)升变
+    from_sq = uci[:2]   # 'e2'
+    to_sq   = uci[2:4]  # 'e4'
+    promo   = uci[4:]   # 'q'/'r'/'b'/'n' 或空串
+
+    def flip_square_180(sq: str) -> str:
+        file = sq[0]  # 'a'~'h'
+        rank = sq[1]  # '1'~'8'
+        # 文件镜像: a→h, b→g, c→f, d→e, e→d, f→c, g→b, h→a
+        new_file = chr(ord('h') - (ord(file) - ord('a')))
+        # 行镜像: 1→8, 2→7, 3→6, 4→5, 5→4, 6→3, 7→2, 8→1
+        new_rank = str(9 - int(rank))
+        return new_file + new_rank
+
+    flipped_from = flip_square_180(from_sq)
+    flipped_to   = flip_square_180(to_sq)
+    return flipped_from + flipped_to + promo
 
 if __name__ == "__main__":
     config = {
@@ -50,7 +72,7 @@ if __name__ == "__main__":
         'memory_size': 10000,
         'batch_size': 64,
         'num_iterations': 1000,
-        'num_self_play_games': 2,
+        'num_self_play_games': 25,
         'temperature': 1.0,
         # その他のハイパーパラメータ
     }

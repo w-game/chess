@@ -7,7 +7,7 @@ from collections import deque
 import chess
 from leela_board import LeelaBoard
 
-from torch import functional as F
+from torch.nn import functional as F
 
 
 class Game:
@@ -74,6 +74,7 @@ class AlphaZeroTrainer:
             legal_p = legal_p / np.sum(legal_p)
             action_idx = np.random.choice(legal_indices, p=legal_p)
             action = game.board.idx_to_move(action_idx, game.board.turn)
+
             game.play_action(action)
 
             states.append(state.lcz_features())

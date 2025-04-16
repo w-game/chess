@@ -54,9 +54,17 @@ class LeelaBoard:
         return index
 
     def idx_to_move(self, index, is_white):
-        dict_idx = 0 if is_white else 1
-        move = idx_to_uci[dict_idx][index]
-        return move
+        color = 0 if is_white else 2
+        
+        has_kingside_rights = self.pc_board.has_kingside_castling_rights(is_white)
+        has_queenside_rights = self.pc_board.has_queenside_castling_rights(is_white)
+
+        if has_kingside_rights or has_queenside_rights:
+            move = idx_to_uci[color + 1][index]
+            if Move.from_uci(move) in self.pc_board.legal_moves:
+                return move
+        
+        return idx_to_uci[color][index]
 
     def copy(self, history=7):
         """Note! Currently the copy constructor uses pc_board.copy(stack=False), which makes pops impossible"""
@@ -106,6 +114,8 @@ class LeelaBoard:
         return result
 
     def is_castling(self, move):
+        if type(move) == str:
+            move = Move.from_uci(move)
         return self.pc_board.is_castling(move)
 
     def _plane_bytes_iter(self):

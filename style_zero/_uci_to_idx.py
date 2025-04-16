@@ -308,4 +308,27 @@ _uci_to_idx_bc['e8c8'], _uci_to_idx_bc['e8a8'] = _uci_to_idx_bc['e8a8'], _uci_to
 
 uci_to_idx = [_uci_to_idx_wn, _uci_to_idx_wc, _uci_to_idx_bn, _uci_to_idx_bc]
 
-idx_to_uci = [_idx_to_move_wn, _idx_to_move_bn]
+_idx_to_move_wc = list(_idx_to_move_wn)
+
+g1_idx = _idx_to_move_wc.index('e1g1')
+h1_idx = _idx_to_move_wc.index('e1h1')
+_idx_to_move_wc[g1_idx], _idx_to_move_wc[h1_idx] = _idx_to_move_wc[h1_idx], _idx_to_move_wc[g1_idx]
+
+c1_idx = _idx_to_move_wc.index('e1c1')
+a1_idx = _idx_to_move_wc.index('e1a1')
+_idx_to_move_wc[c1_idx], _idx_to_move_wc[a1_idx] = _idx_to_move_wc[a1_idx], _idx_to_move_wc[c1_idx]
+
+
+_idx_to_move_bc = list(_idx_to_move_bn)
+
+g8_idx = _idx_to_move_bc.index('e8g8')
+h8_idx = _idx_to_move_bc.index('e8h8')
+_idx_to_move_bc[g8_idx], _idx_to_move_bc[h8_idx] = _idx_to_move_bc[h8_idx], _idx_to_move_bc[g8_idx]
+
+c8_idx = _idx_to_move_bc.index('e8c8')
+a8_idx = _idx_to_move_bc.index('e8a8')
+_idx_to_move_bc[c8_idx], _idx_to_move_bc[a8_idx] = _idx_to_move_bc[a8_idx], _idx_to_move_bc[c8_idx]
+
+
+
+idx_to_uci = [_idx_to_move_wn, _idx_to_move_wc, _idx_to_move_bn, _idx_to_move_bc]
