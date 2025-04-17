@@ -80,8 +80,8 @@ class AlphaZeroTrainer:
             states.append(state.lcz_features())
             pis.append(pi)
 
-        sim_a = self.reward_fc(game.board.get_feature_sequence(), True) if step < 200 else 0.0
-        sim_b = self.reward_fc(game.board.get_feature_sequence(), False) if step < 200 else 0.0
+        sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
+        sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
         for state, pi in zip(states, pis):
             self.memory.append((state, pi, sim_a, sim_b))
         

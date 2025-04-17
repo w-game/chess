@@ -52,7 +52,7 @@ def calc_target_emb(player_name):
         states = data['states']
         T = min(states.shape[0], 200)
         mask = torch.zeros(T, dtype=torch.bool)
-        color = "white" if "white" in file_path else "black"
+        color = True if "white" in file_path else False
         indices = range(0, T - 1, 2) if color else range(1, T - 1, 2)
 
         for k, i in enumerate(indices):
@@ -97,9 +97,16 @@ if __name__ == "__main__":
     checkpoint = torch.load("../models/trained_model/player_encoder_60.pt")
 
     emb_net.to(device)
+    emb_net.load_state_dict(checkpoint['model_state_dict'])
 
     target_a_style_embedding = calc_target_emb("xugal").to(device)
-    target_b_style_embedding = calc_target_emb("DrMarlonsky").to(device)
+    target_b_style_embedding = calc_target_emb("clparagao123").to(device)
+
+    print(f"target_a_style_embedding: {target_a_style_embedding.shape}")
+    print(f"target_b_style_embedding: {target_b_style_embedding.shape}")
+
+    target_sim = torch.cosine_similarity(target_a_style_embedding, target_b_style_embedding, dim=1).mean().item()
+    print(f"target_sim: {target_sim:.4f}")
 
     net = AlphaZeroNet().to(device)
     # net_b = AlphaZeroNet().to(device)

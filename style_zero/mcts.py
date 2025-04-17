@@ -24,7 +24,7 @@ def softmax(x):
 
 
 class MCTS:
-    def __init__(self, net, reward_fc, device=None, num_simulations=20, c_puct=1.0, gamma=0.995):
+    def __init__(self, net, reward_fc, device=None, num_simulations=20, c_puct=1.0, gamma=0.95):
         self.net = net
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_simulations = num_simulations
@@ -36,8 +36,8 @@ class MCTS:
     def simulate(self, state, node, step=0):
         if state.is_game_over():
             features = state.get_feature_sequence()
-            reward_white = self.reward_fc(features, True) * (self.gamma ** step)
-            reward_black = self.reward_fc(features, False) * (self.gamma ** step)
+            reward_white = self.reward_fc(features, True)
+            reward_black = self.reward_fc(features, False)
 
             node.visit_count += 1
 
@@ -67,6 +67,12 @@ class MCTS:
                 if node.parent is None:
                     prior = 0.75 * prior + 0.25 * noise[i]
                 node.children[a_idx] = TreeNode(node, float(prior))
+
+            if step > 150:
+                penalty = -0.05 * (step - 150)
+                node.visit_count += 1
+                node.total_value += penalty
+                return penalty, penalty
 
             node.visit_count += 1
 
