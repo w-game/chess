@@ -24,25 +24,20 @@ def softmax(x):
 
 
 class MCTS:
-    def __init__(self, net, reward_fc, device=None, num_simulations=20, c_puct=1.0):
+    def __init__(self, net, reward_fc, device=None, num_simulations=20, c_puct=1.0, gamma=0.995):
         self.net = net
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_simulations = num_simulations
         self.c_puct = c_puct
         self.reward_fc = reward_fc
+        self.gamma = gamma
     
     
     def simulate(self, state, node, step=0):
         if state.is_game_over():
-            if step > 200:
-                penalty = -0.05
-                node.visit_count += 1
-                node.total_value += penalty
-                return penalty, penalty
-            
             features = state.get_feature_sequence()
-            reward_white = self.reward_fc(features, True)
-            reward_black = self.reward_fc(features, False)
+            reward_white = self.reward_fc(features, True) * (self.gamma ** step)
+            reward_black = self.reward_fc(features, False) * (self.gamma ** step)
 
             node.visit_count += 1
 
@@ -63,18 +58,16 @@ class MCTS:
             legal_moves = state.generate_legal_moves()
             legal_idxs = [state.move_to_index(a, state.turn, state.is_castling(a)) for a in legal_moves]
 
-            if node.parent is None:   # 仅根节点
+            # --- create child nodes ---
+            if node.parent is None:
                 noise = np.random.dirichlet([0.3] * len(legal_idxs))
-                for i, a_idx in enumerate(legal_idxs):
-                    noisy_prior = 0.75 * policy[a_idx] + 0.25 * noise[i]
-                    node.children[a_idx] = TreeNode(node, noisy_prior)
 
-            if step > 200:
-                penalty = -0.05
-                node.visit_count += 1
-                node.total_value += penalty
-                return penalty, penalty
-            
+            for i, a_idx in enumerate(legal_idxs):
+                prior = policy[a_idx]
+                if node.parent is None:
+                    prior = 0.75 * prior + 0.25 * noise[i]
+                node.children[a_idx] = TreeNode(node, float(prior))
+
             node.visit_count += 1
 
             if state.turn:
