@@ -43,12 +43,11 @@ def calc_target_emb(player_name):
     random.shuffle(game_files)
     selected_files = game_files[:5]
 
-    paired_states = []
-    paired_mask = []
-
     embs = []
 
     for file_path in selected_files:
+        paired_states = []
+        paired_mask = []
         data = torch.load(file_path)
         states = data['states']
         T = min(states.shape[0], 200)
