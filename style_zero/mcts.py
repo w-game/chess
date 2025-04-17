@@ -33,9 +33,13 @@ class MCTS:
     
     
     def simulate(self, state, node, step=0):
-        if step > 200:
-            return 0, 0
         if state.is_game_over():
+            if step > 200:
+                penalty = -0.05
+                node.visit_count += 1
+                node.total_value += penalty
+                return penalty, penalty
+            
             features = state.get_feature_sequence()
             reward_white = self.reward_fc(features, True)
             reward_black = self.reward_fc(features, False)
@@ -65,6 +69,12 @@ class MCTS:
                     noisy_prior = 0.75 * policy[a_idx] + 0.25 * noise[i]
                     node.children[a_idx] = TreeNode(node, noisy_prior)
 
+            if step > 200:
+                penalty = -0.05
+                node.visit_count += 1
+                node.total_value += penalty
+                return penalty, penalty
+            
             node.visit_count += 1
 
             if state.turn:
@@ -94,16 +104,16 @@ class MCTS:
 
         return v_w, v_b
     
-    def run(self, state):
+    def run(self, state, step=0):
         root = TreeNode(None, 1.0)
         for _ in range(self.num_simulations):
-            v_w, v_b = self.simulate(state.copy(), root, 0)
+            v_w, v_b = self.simulate(state.copy(), root, step)
 
         visits = {a: child.visit_count for a, child in root.children.items()}
         return visits
 
     def get_action_probabilities(self, state, step, temp=1.0):
-        visits = self.run(state)
+        visits = self.run(state, step)
 
         # Show top‑3 visit counts for quick sanity check
         if len(visits) > 0:

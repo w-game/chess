@@ -59,7 +59,7 @@ class AlphaZeroTrainer:
 
         step = 0
 
-        while not game.is_game_over() and step < 200:
+        while not game.is_game_over():
             step += 1
 
             legal_move = game.generate_legal_moves()
