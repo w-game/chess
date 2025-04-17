@@ -39,11 +39,11 @@ class MCTS:
             if state.turn:
                 # 如果当前是白方的回合，则黑胜利，最后一手为黑方
                 reward = self.reward_fc(features, False)
+                return 1, reward
             else:
                 # 如果当前是黑方的回合，则白胜利，最后一手为白方
                 reward = self.reward_fc(features, True)
-            print(f"Game over: value = {reward}")
-            return (reward + 0.5), not state.turn
+                return reward, 1
 
         if not node.children:
             features = state.lcz_features()
@@ -60,7 +60,10 @@ class MCTS:
                 a_idx = state.move_to_index(a, state.turn, state.is_castling(a))
                 node.children[a_idx] = TreeNode(node, policy[a_idx])
 
-            return v.item(), state.turn
+            if state.turn:
+                return v.item(), 0
+            else:
+                return 0, v.item()
 
         best_score, best_action_idx = -float('inf'), None
         for a, child in node.children.items():
@@ -72,18 +75,23 @@ class MCTS:
         real_action = state.idx_to_move(best_action_idx, state.turn)
         state.push_uci(real_action)
         next_state = state.copy()
-        v, is_white = self.simulate(next_state, node.children[best_action_idx])
+        v_white, v_black = self.simulate(next_state, node.children[best_action_idx])
 
         child = node.children[best_action_idx]
-        if state.turn == is_white:
-            child.total_value += v
+
+        if state.turn:
+            child.total_value += v_white
             child.visit_count += 1
-        return v, is_white
+        else:
+            child.total_value += v_black
+            child.visit_count += 1
+        return v_white, v_black
     
     def run(self, state):
         root = TreeNode(None, 1.0)
         for _ in range(self.num_simulations):
-            self.simulate(state.copy(), root)
+            v_white, v_black = self.simulate(state.copy(), root)
+            print(f"v_white: {v_white}, v_black: {v_black}")
         visits = {a: child.visit_count for a, child in root.children.items()}
         return visits
 
