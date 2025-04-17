@@ -1,3 +1,6 @@
+from glob import glob
+import os
+import random
 import numpy as np
 import torch
 
@@ -23,6 +26,8 @@ def style_reward(game, color=True, s_min=0.2, s_max=0.9):
 
     states = []
     for _, i in enumerate(indices):
+        if i > 100:
+            break
         s_t = game[i]
         s_tp1 = game[i + 1]
         s_pair = np.concatenate([s_t, s_tp1], axis=0)
@@ -32,7 +37,10 @@ def style_reward(game, color=True, s_min=0.2, s_max=0.9):
 
     state_tensor = torch.tensor(states, dtype=torch.float32).unsqueeze(0).to(device)
     style_emb =  target_a_style_embedding if color else target_b_style_embedding
-    _, pred_emb = emb_net(state_tensor)
+    state_mask = torch.zeros(state_tensor.size(1), dtype=torch.bool).unsqueeze(0).to(device)
+
+    # print(f"state_tensor: {state_mask.shape}, {state_tensor.shape}")
+    _, pred_emb = emb_net(state_tensor, state_mask)
 
     # 计算原相似度
     raw_sim = torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0), dim=1).mean()
@@ -43,28 +51,38 @@ def style_reward(game, color=True, s_min=0.2, s_max=0.9):
 
     return raw_sim_val
 
-def flip_uci_180(uci: str) -> str:
-    """
-    将形如 'e2e4' 的“白方视角”UCI 翻转成“黑方真实”UCI，比如 'e2e4' → 'e7e5'。
-    若含升变字符 (如 'e7e8q')，也保持不变地加回末尾。
-    """
-    # 提取起点、终点、(可选)升变
-    from_sq = uci[:2]   # 'e2'
-    to_sq   = uci[2:4]  # 'e4'
-    promo   = uci[4:]   # 'q'/'r'/'b'/'n' 或空串
+def calc_target_emb(player_name):
+    target_a_path = f"../chess_data_parse/dataset/{player_name}"
+    game_files = glob(os.path.join(target_a_path, "*.pt"))
+    random.shuffle(game_files)
+    selected_files = game_files[:5]
 
-    def flip_square_180(sq: str) -> str:
-        file = sq[0]  # 'a'~'h'
-        rank = sq[1]  # '1'~'8'
-        # 文件镜像: a→h, b→g, c→f, d→e, e→d, f→c, g→b, h→a
-        new_file = chr(ord('h') - (ord(file) - ord('a')))
-        # 行镜像: 1→8, 2→7, 3→6, 4→5, 5→4, 6→3, 7→2, 8→1
-        new_rank = str(9 - int(rank))
-        return new_file + new_rank
+    paired_states = []
+    paired_mask = []
 
-    flipped_from = flip_square_180(from_sq)
-    flipped_to   = flip_square_180(to_sq)
-    return flipped_from + flipped_to + promo
+    for file_path in selected_files:
+        data = torch.load(file_path)
+        states = data['states']
+        T = states.size(0)
+        mask = torch.zeros(T, dtype=torch.bool)
+        color = "white" if "white" in file_path else "black"
+        if color == 'white':
+            indices = range(0, T - 1, 2)  # 白方下在偶数步
+        else:
+            indices = range(1, T - 1, 2)  # 黑方下在奇数步
+
+        for idx, i in enumerate(indices):
+            s_t = states[i]
+            s_tp1 = states[i + 1]
+            s_pair = torch.cat([s_t, s_tp1], dim=0)  # 压缩为 float16
+            paired_states.append(s_pair)
+            paired_mask.append(mask[i])
+
+        paired_states = torch.stack(paired_states).unsqueeze(0).float().to(device)  # [T', 224, 8, 8]
+        paired_mask = torch.tensor(paired_mask, dtype=torch.bool).unsqueeze(0).to(device)  # [T']
+        with torch.no_grad():
+            _, pred_emb = emb_net(paired_states, paired_mask)
+            return pred_emb
 
 if __name__ == "__main__":
     config = {
@@ -95,8 +113,8 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     emb_net.to(device)
 
-    target_a_style_embedding = torch.randn(256).to(device)
-    target_b_style_embedding = torch.randn(256).to(device)
+    target_a_style_embedding = calc_target_emb("xugal").to(device)
+    target_b_style_embedding = calc_target_emb("DrMarlonsky").to(device)
 
     net_a = AlphaZeroNet().to(device)
     net_b = AlphaZeroNet().to(device)

@@ -56,12 +56,12 @@ class AlphaZeroTrainer:
 
     def self_play(self):
         game = self.game_cls()
-        mcts = self.mcts_cls(self.net_a, self.net_b, self.reward_fc, self.device, num_simulations=20, c_puct=1.0)
+        mcts = self.mcts_cls(self.net_a, self.net_b, self.reward_fc, self.device, num_simulations=50, c_puct=1.0)
         states, pis = [], []
 
         step = 0
 
-        while not game.is_game_over() and step < 100:
+        while not game.is_game_over() and step < 200:
             step += 1
 
             legal_move = game.generate_legal_moves()
@@ -85,6 +85,9 @@ class AlphaZeroTrainer:
         for idx, (state, pi) in enumerate(zip(states, pis)):
             sim = sim_a if idx % 2 == 0 else sim_b
             self.memory.append((state, pi, sim, idx % 2 == 0))  # winner should be replaced with sim
+        
+        return step, sim_a, sim_b
+
 
     def train(self):
         if len(self.memory) < self.config['batch_size']:
@@ -137,8 +140,9 @@ class AlphaZeroTrainer:
         for iteration in range(self.config['num_iterations']):
             print(f"Iteration {iteration + 1}/{self.config['num_iterations']}")
             for idx in range(self.config['num_self_play_games']):
-                self.self_play()
-                print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed.")
+                step, sim_a, sim_b = self.self_play()
+                print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed with {step} steps. sim_a: {sim_a}, sim_b: {sim_b}")
+
             self.train()
             # 必要に应对模型的保存或评估进行处理
 

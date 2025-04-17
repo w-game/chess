@@ -43,7 +43,7 @@ class MCTS:
                 # 如果当前是黑方的回合，则白胜利，最后一手为白方
                 reward = self.reward_fc(features, True)
             print(f"Game over: value = {reward}")
-            return reward, not state.turn
+            return (reward + 0.5), not state.turn
 
         if not node.children:
             features = state.lcz_features()
@@ -60,7 +60,7 @@ class MCTS:
                 a_idx = state.move_to_index(a, state.turn, state.is_castling(a))
                 node.children[a_idx] = TreeNode(node, policy[a_idx])
 
-            return v, not state.turn
+            return v.item(), state.turn
 
         best_score, best_action_idx = -float('inf'), None
         for a, child in node.children.items():
