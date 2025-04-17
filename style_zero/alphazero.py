@@ -42,21 +42,19 @@ class Game:
 
 
 class AlphaZeroTrainer:
-    def __init__(self, game_cls, net_a, net_b, reward_fc, mcts_cls, config, device=None):
+    def __init__(self, game_cls, net, reward_fc, mcts_cls, config, device=None):
         self.game_cls = game_cls
-        self.net_a = net_a
-        self.net_b = net_b
+        self.net = net
         self.reward_fc = reward_fc
         self.mcts_cls = mcts_cls
         self.config = config
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.optimizer_a = optim.Adam(self.net_a.parameters(), lr=config['lr'])
-        self.optimizer_b = optim.Adam(self.net_b.parameters(), lr=config['lr'])
+        self.optimizer = optim.Adam(self.net.parameters(), lr=config['lr'])
         self.memory = deque(maxlen=config['memory_size'])
 
     def self_play(self):
         game = self.game_cls()
-        mcts = self.mcts_cls(self.net_a, self.net_b, self.reward_fc, self.device, num_simulations=50, c_puct=1.0)
+        mcts = self.mcts_cls(self.net, self.reward_fc, self.device, num_simulations=50, c_puct=1.0)
         states, pis = [], []
 
         step = 0
@@ -82,9 +80,8 @@ class AlphaZeroTrainer:
 
         sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
         sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
-        for idx, (state, pi) in enumerate(zip(states, pis)):
-            sim = sim_a if idx % 2 == 0 else sim_b
-            self.memory.append((state, pi, sim, idx % 2 == 0))  # winner should be replaced with sim
+        for state, pi in zip(states, pis):
+            self.memory.append((state, pi, sim_a, sim_b))
         
         return step, sim_a, sim_b
 
@@ -94,47 +91,27 @@ class AlphaZeroTrainer:
             return
 
         batch = random.sample(self.memory, self.config['batch_size'])
-        states, pis, zs, is_white = zip(*batch)
+        states, pis, sim_ws, sim_bs = zip(*batch)
 
-        states_white = [torch.tensor(state) for state, is_white in zip(states, is_white) if is_white]
-        pis_white = [torch.tensor(pi) for pi, is_white in zip(pis, is_white) if is_white]
-        zs_white = [torch.tensor(z) for z, is_white in zip(zs, is_white) if is_white]
+        states_np = np.stack(states).astype(np.float32)
+        pis_np    = np.stack(pis).astype(np.float32)
+        sim_ws_np  = np.asarray(sim_ws, dtype=np.float32).reshape(-1,1)
+        sim_bs_np  = np.asarray(sim_bs, dtype=np.float32).reshape(-1,1)
+        target_vw = torch.from_numpy(sim_ws_np).to(self.device)
+        target_vb = torch.from_numpy(sim_bs_np).to(self.device)
 
-        states_white = torch.stack(states_white, dim=0).to(dtype=torch.float32, device=self.device)
-        target_pis = torch.stack(pis_white, dim=0).to(dtype=torch.float32, device=self.device)
-        target_zs = torch.stack(zs_white, dim=0).to(dtype=torch.float32, device=self.device).view(-1, 1)
+        states_t  = torch.from_numpy(states_np).to(self.device)
+        target_pi = torch.from_numpy(pis_np).to(self.device)
 
-        logits, pred_zs = self.net_a(states_white)
-        log_pis = F.log_softmax(logits, dim=1)
-        loss_pi = F.kl_div(log_pis, target_pis, reduction='batchmean')
-        loss_z = F.mse_loss(pred_zs, target_zs)
+        logits, pred_vw, pred_vb = self.net(states_t)
+        loss_pi = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
+        loss_z = F.mse_loss(pred_vw, target_vw) + F.mse_loss(pred_vb, target_vb)
         loss = loss_pi + loss_z
 
-        self.optimizer_a.zero_grad()
+        self.optimizer.zero_grad()
         loss.backward()
-        self.optimizer_a.step()
-        print(f"Loss A: {loss.item()}")
-
-        # 训练B网络
-        states_black = [torch.tensor(state) for state, is_white in zip(states, is_white) if not is_white]
-        pis_black = [torch.tensor(pi) for pi, is_white in zip(pis, is_white) if not is_white]
-        zs_black = [torch.tensor(z) for z, is_white in zip(zs, is_white) if not is_white]
-
-        states_black = torch.stack(states_black, dim=0).to(dtype=torch.float32, device=self.device)
-        target_pis = torch.stack(pis_black, dim=0).to(dtype=torch.float32, device=self.device)
-        target_zs = torch.stack(zs_black, dim=0).to(dtype=torch.float32, device=self.device).view(-1, 1)
-
-        logits, pred_zs = self.net_b(states_black)
-        log_pis = F.log_softmax(logits, dim=1)
-        loss_pi = F.kl_div(log_pis, target_pis, reduction='batchmean')
-        loss_z = F.mse_loss(pred_zs, target_zs)
-        loss = loss_pi + loss_z
-
-        self.optimizer_b.zero_grad()
-        loss.backward()
-        self.optimizer_b.step()
-        print(f"Loss B: {loss.item()}")
-
+        self.optimizer.step()
+        print(f"Loss: {loss.item()}")
 
     def run(self):
         for iteration in range(self.config['num_iterations']):
@@ -144,10 +121,7 @@ class AlphaZeroTrainer:
                 print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed with {step} steps. sim_a: {sim_a}, sim_b: {sim_b}")
 
             self.train()
-            # 必要に应对模型的保存或评估进行处理
 
             if (iteration + 1) % self.config['save_interval'] == 0:
-                torch.save(self.net_a.state_dict(), f"./models/model_a_{iteration + 1}.pth")
-                torch.save(self.net_b.state_dict(), f"./models/model_b_{iteration + 1}.pth")
+                torch.save(self.net.state_dict(), f"./models/model_{iteration+1}.pth")
                 print(f"Models saved at iteration {iteration + 1}.")
-

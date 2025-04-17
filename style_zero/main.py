@@ -4,52 +4,38 @@ import random
 import numpy as np
 import torch
 
-from alphazero import AlphaZeroTrainer, Game
-from model import AlphaZeroNet
-from mcts import MCTS
 from player_encoder.encoder import TransformerEncoder
+from style_zero.alphazero import AlphaZeroTrainer, Game
+from style_zero.mcts import MCTS
+from style_zero.model import AlphaZeroNet
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def style_reward(game, color=True, s_min=0.2, s_max=0.9):
+def style_reward(game, color=True):
     """
-    计算风格相似度并进行Min-Max缩放映射到[0,1]。
-    :param game: 棋局特征序列
-    :param color: True表示对白方动作做风格分析，False表示对黑方
-    :param s_min: 相似度分布可能出现的“最小值”
-    :param s_max: 相似度分布可能出现的“最大值”
-    :return: 缩放后的风格奖励 (0~1)
+    Compute cosine‑similarity style reward in the range [-1, 1].
+    `color=True`  -> evaluate white;  `False` -> evaluate black.
     """
     T = len(game)
-    if color:
-        indices = range(0, T - 1, 2)
-    else:
-        indices = range(1, T - 1, 2)
+    indices = range(0, T - 1, 2) if color else range(1, T - 1, 2)
 
-    states = []
-    for _, i in enumerate(indices):
-        if i > 100:
+    paired = []
+    for k, i in enumerate(indices):
+        if k >= 100:                # truncate to 100 move‑pairs
             break
-        s_t = game[i]
-        s_tp1 = game[i + 1]
-        s_pair = np.concatenate([s_t, s_tp1], axis=0)
-        states.append(s_pair)
+        pair = np.concatenate([game[i], game[i + 1]], axis=0)  # [224,8,8]
+        paired.append(pair)
 
-    states = np.stack(states, axis=0)  
+    if not paired:
+        return 0.0
 
-    state_tensor = torch.tensor(states, dtype=torch.float32).unsqueeze(0).to(device)
-    style_emb =  target_a_style_embedding if color else target_b_style_embedding
-    state_mask = torch.zeros(state_tensor.size(1), dtype=torch.bool).unsqueeze(0).to(device)
+    states = torch.tensor(np.stack(paired), dtype=torch.float32, device=device).unsqueeze(0)  # (1,T',224,8,8)
+    mask   = torch.zeros(states.size(1), dtype=torch.bool, device=device).unsqueeze(0)        # (1,T')
 
-    # print(f"state_tensor: {state_mask.shape}, {state_tensor.shape}")
-    _, pred_emb = emb_net(state_tensor, state_mask)
+    style_emb = target_a_style_embedding if color else target_b_style_embedding
+    with torch.no_grad():
+        _, pred_emb = emb_net(states, mask)
 
-    # 计算原相似度
-    raw_sim = torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0), dim=1).mean()
-    raw_sim_val = raw_sim.item()
-
-    # clipped_sim = max(min(raw_sim_val, s_max), s_min)  
-    # scaled_sim = (clipped_sim - s_min) / (s_max - s_min)
-
-    return raw_sim_val
+    return torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0), dim=1).mean().item()
 
 def calc_target_emb(player_name):
     target_a_path = f"../chess_data_parse/dataset/{player_name}"
@@ -110,14 +96,13 @@ if __name__ == "__main__":
 
     checkpoint = torch.load("../models/trained_model/player_encoder_60.pt")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     emb_net.to(device)
 
     target_a_style_embedding = calc_target_emb("xugal").to(device)
     target_b_style_embedding = calc_target_emb("DrMarlonsky").to(device)
 
-    net_a = AlphaZeroNet().to(device)
-    net_b = AlphaZeroNet().to(device)
+    net = AlphaZeroNet().to(device)
+    # net_b = AlphaZeroNet().to(device)
 
-    trainer = AlphaZeroTrainer(Game, net_a, net_b, style_reward, MCTS, config, device)
+    trainer = AlphaZeroTrainer(Game, net, style_reward, MCTS, config, device)
     trainer.run()

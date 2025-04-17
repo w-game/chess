@@ -24,9 +24,8 @@ def softmax(x):
 
 
 class MCTS:
-    def __init__(self, net_a, net_b, reward_fc, device=None, num_simulations=20, c_puct=1.0):
-        self.net_a = net_a
-        self.net_b = net_b
+    def __init__(self, net, reward_fc, device=None, num_simulations=20, c_puct=1.0):
+        self.net = net
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_simulations = num_simulations
         self.c_puct = c_puct
@@ -36,18 +35,17 @@ class MCTS:
     def simulate(self, state, node):
         if state.is_game_over():
             features = state.get_feature_sequence()
-            reward_black = self.reward_fc(features, False)
             reward_white = self.reward_fc(features, True)
-            return reward_white, reward_black
+            reward_black = self.reward_fc(features, False)
+            v_terminal = reward_white if state.turn else reward_black
+            return v_terminal
 
         if not node.children:
             features = state.lcz_features()
             features = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
 
-            if state.turn:
-                policy_logits, v = self.net_a.forward(features)
-            else:
-                policy_logits, v = self.net_b.forward(features)
+            policy_logits, v_w, v_b = self.net.forward(features)
+            v_self = v_w.item() if state.turn else v_b.item()
                 
             policy = softmax(policy_logits.detach().cpu().numpy().flatten())
             legal_moves = state.generate_legal_moves()
@@ -59,10 +57,7 @@ class MCTS:
                 noisy_prior = 0.75 * policy[a_idx] + 0.25 * noise[i]
                 node.children[a_idx] = TreeNode(node, noisy_prior)
 
-            if state.turn:
-                return v.item(), 0
-            else:
-                return 0, v.item()
+            return v_self
 
         best_score, best_action_idx = -float('inf'), None
         for a, child in node.children.items():
@@ -72,32 +67,20 @@ class MCTS:
                 best_action_idx = a
 
         real_action = state.idx_to_move(best_action_idx, state.turn)
-        state.push_uci(real_action)
         next_state = state.copy()
-        v_white, v_black = self.simulate(next_state, node.children[best_action_idx])
+        next_state.push_uci(real_action)
+        v = self.simulate(next_state, node.children[best_action_idx])
 
         child = node.children[best_action_idx]
 
-        if state.turn:
-            child.total_value += v_white
-            child.visit_count += 1
-            if v_white == 0:
-                child.total_value += child.value()
-                child.visit_count += 1
-        else:
-            child.total_value += v_black
-            child.visit_count += 1
-            if v_black == 0:
-                child.total_value += child.value()
-                child.visit_count += 1
-        return v_white, v_black
+        child.total_value += v
+        child.visit_count += 1
+        return v
     
     def run(self, state):
         root = TreeNode(None, 1.0)
         for idx in range(self.num_simulations):
-            v_white, v_black = self.simulate(state.copy(), root)
-            if idx % 10 == 0 and v_white != 0 and v_black != 0:
-                print(f"Simulation {idx + 1}/{self.num_simulations}: v_white: {v_white}, v_black: {v_black}")
+            v = self.simulate(state.copy(), root)
         visits = {a: child.visit_count for a, child in root.children.items()}
         return visits
 
