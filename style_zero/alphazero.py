@@ -103,15 +103,33 @@ class AlphaZeroTrainer:
         states_t  = torch.from_numpy(states_np).to(self.device)
         target_pi = torch.from_numpy(pis_np).to(self.device)
 
+        # ---------- monitoring ----------
+        # We'll record per‑batch statistics right after forward pass.
         logits, pred_vw, pred_vb = self.net(states_t)
+        # policy loss
         loss_pi = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
-        loss_z = F.mse_loss(pred_vw, target_vw) + F.mse_loss(pred_vb, target_vb)
+
+        # value losses
+        loss_vw = F.mse_loss(pred_vw, target_vw)
+        loss_vb = F.mse_loss(pred_vb, target_vb)
+        loss_z  = loss_vw + loss_vb
+
+        # total
         loss = loss_pi + loss_z
 
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        print(f"Loss: {loss.item()}")
+        # ---------- print metrics ----------
+        mean_vw = pred_vw.mean().item()
+        mean_vb = pred_vb.mean().item()
+        print(f"[TRAIN] batch={self.config['batch_size']} "
+              f"Loss_pi={loss_pi.item():.4f} "
+              f"Loss_vw={loss_vw.item():.4f} "
+              f"Loss_vb={loss_vb.item():.4f} "
+              f"Total={loss.item():.4f} "
+              f"mean_pred_vw={mean_vw:.3f} "
+              f"mean_pred_vb={mean_vb:.3f}")
 
     def run(self):
         for iteration in range(self.config['num_iterations']):

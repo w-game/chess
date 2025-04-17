@@ -81,6 +81,12 @@ class MCTS:
         root = TreeNode(None, 1.0)
         for idx in range(self.num_simulations):
             v = self.simulate(state.copy(), root)
+        
+        # Show top‑3 visit counts for quick sanity check
+        if len(visits) > 0:
+            top3 = sorted(visits.items(), key=lambda x: x[1], reverse=True)[:3]
+            print(f"[MCTS] top‑3 root visits: {top3}")
+
         visits = {a: child.visit_count for a, child in root.children.items()}
         return visits
 
