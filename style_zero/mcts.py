@@ -36,14 +36,9 @@ class MCTS:
     def simulate(self, state, node):
         if state.is_game_over():
             features = state.get_feature_sequence()
-            if state.turn:
-                # 如果当前是白方的回合，则黑胜利，最后一手为黑方
-                reward = self.reward_fc(features, False)
-                return 1, reward
-            else:
-                # 如果当前是黑方的回合，则白胜利，最后一手为白方
-                reward = self.reward_fc(features, True)
-                return reward, 1
+            reward_black = self.reward_fc(features, False)
+            reward_white = self.reward_fc(features, True)
+            return reward_white, reward_black
 
         if not node.children:
             features = state.lcz_features()
@@ -53,12 +48,16 @@ class MCTS:
                 policy_logits, v = self.net_a.forward(features)
             else:
                 policy_logits, v = self.net_b.forward(features)
-
+                
             policy = softmax(policy_logits.detach().cpu().numpy().flatten())
             legal_moves = state.generate_legal_moves()
-            for a in legal_moves:
-                a_idx = state.move_to_index(a, state.turn, state.is_castling(a))
-                node.children[a_idx] = TreeNode(node, policy[a_idx])
+            legal_idxs = [state.move_to_index(a, state.turn, state.is_castling(a)) for a in legal_moves]
+
+            # 添加 Dirichlet 噪声
+            noise = np.random.dirichlet([0.3] * len(legal_idxs))
+            for i, a_idx in enumerate(legal_idxs):
+                noisy_prior = 0.75 * policy[a_idx] + 0.25 * noise[i]
+                node.children[a_idx] = TreeNode(node, noisy_prior)
 
             if state.turn:
                 return v.item(), 0
@@ -82,16 +81,23 @@ class MCTS:
         if state.turn:
             child.total_value += v_white
             child.visit_count += 1
+            if v_white == 0:
+                child.total_value += child.value()
+                child.visit_count += 1
         else:
             child.total_value += v_black
             child.visit_count += 1
+            if v_black == 0:
+                child.total_value += child.value()
+                child.visit_count += 1
         return v_white, v_black
     
     def run(self, state):
         root = TreeNode(None, 1.0)
-        for _ in range(self.num_simulations):
+        for idx in range(self.num_simulations):
             v_white, v_black = self.simulate(state.copy(), root)
-            print(f"v_white: {v_white}, v_black: {v_black}")
+            if idx % 10 == 0 and v_white != 0 and v_black != 0:
+                print(f"Simulation {idx + 1}/{self.num_simulations}: v_white: {v_white}, v_black: {v_black}")
         visits = {a: child.visit_count for a, child in root.children.items()}
         return visits
 
