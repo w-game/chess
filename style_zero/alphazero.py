@@ -54,7 +54,7 @@ class AlphaZeroTrainer:
 
     def self_play(self):
         game = self.game_cls()
-        mcts = self.mcts_cls(self.net, self.reward_fc, self.device, num_simulations=50, c_puct=3.0)
+        mcts = self.mcts_cls(self.net, self.reward_fc, self.device, num_simulations=150, c_puct=3.0)
         states, pis = [], []
 
         step = 0

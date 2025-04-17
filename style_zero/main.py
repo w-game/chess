@@ -31,11 +31,29 @@ def style_reward(game, color=True):
     states = torch.tensor(np.stack(paired), dtype=torch.float32, device=device).unsqueeze(0)  # (1,T',224,8,8)
     mask   = torch.zeros(states.size(1), dtype=torch.bool, device=device).unsqueeze(0)        # (1,T')
 
+    states = pad_or_truncate(states, 100, pad_value=0.0, dim=1)  # (1,100,224,8,8)
+    mask   = pad_or_truncate(mask, 100, pad_value=True, dim=1)   # (1,100)
+
     style_emb = target_a_style_embedding if color else target_b_style_embedding
     with torch.no_grad():
         _, pred_emb = emb_net(states, mask)
 
     return torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0), dim=1).mean().item()
+
+def pad_or_truncate(tensor, target_len, pad_value=0, dim=0):
+    """
+    自动补全/截断 tensor 到 target_len
+    """
+    T = tensor.size(dim)
+    if T == target_len:
+        return tensor
+    elif T > target_len:
+        return tensor.narrow(dim, 0, target_len)
+    else:
+        pad_size = list(tensor.shape)
+        pad_size[dim] = target_len - T
+        pad_tensor = torch.full(pad_size, pad_value, dtype=tensor.dtype, device=tensor.device)
+        return torch.cat([tensor, pad_tensor], dim=dim)
 
 def calc_target_emb(player_name):
     target_a_path = f"../chess_data_parse/dataset/{player_name}"
@@ -63,6 +81,9 @@ def calc_target_emb(player_name):
 
         processed_states = torch.stack(paired_states).unsqueeze(0).float().to(device)  # [T', 224, 8, 8]
         processed_masks = torch.tensor(paired_mask, dtype=torch.bool).unsqueeze(0).to(device)  # [T']
+
+        processed_states = pad_or_truncate(processed_states, 100, pad_value=0.0, dim=1)
+        processed_masks = pad_or_truncate(processed_masks, 100, pad_value=True, dim=1)
         with torch.no_grad():
             _, pred_emb = emb_net(processed_states, processed_masks)
         embs.append(pred_emb)
