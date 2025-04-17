@@ -15,7 +15,7 @@ def style_reward(game, color=True):
     Compute cosine‑similarity style reward in the range [-1, 1].
     `color=True`  -> evaluate white;  `False` -> evaluate black.
     """
-    T = len(game)
+    T = min(game.size(0), 200)
     indices = range(0, T - 1, 2) if color else range(1, T - 1, 2)
 
     paired = []
@@ -51,14 +51,12 @@ def calc_target_emb(player_name):
     for file_path in selected_files:
         data = torch.load(file_path)
         states = data['states']
-        T = states.size(0)
+        T = min(states.shape[0], 200)
         mask = torch.zeros(T, dtype=torch.bool)
         color = "white" if "white" in file_path else "black"
         indices = range(0, T - 1, 2) if color else range(1, T - 1, 2)
 
         for k, i in enumerate(indices):
-            if k >= 100:                # truncate to 100 move‑pairs
-                break
             pair = np.concatenate([states[i], states[i + 1]], axis=0)  # [224,8,8]
             pair = torch.tensor(pair, dtype=torch.float32, device=device)  # [224,8,8]
             paired_states.append(pair)
