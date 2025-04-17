@@ -60,6 +60,7 @@ def calc_target_emb(player_name):
             if k >= 100:                # truncate to 100 move‑pairs
                 break
             pair = np.concatenate([states[i], states[i + 1]], axis=0)  # [224,8,8]
+            pair = torch.tensor(pair, dtype=torch.float32, device=device)  # [224,8,8]
             paired_states.append(pair)
             paired_mask.append(mask[i])
 
