@@ -5,9 +5,9 @@ import numpy as np
 import torch
 
 from player_encoder.encoder import TransformerEncoder
-from style_zero.alphazero import AlphaZeroTrainer, Game
-from style_zero.mcts import MCTS
-from style_zero.model import AlphaZeroNet
+from alphazero import AlphaZeroTrainer, Game
+from mcts import MCTS
+from model import AlphaZeroNet
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def style_reward(game, color=True):
@@ -46,6 +46,8 @@ def calc_target_emb(player_name):
     paired_states = []
     paired_mask = []
 
+    embs = []
+
     for file_path in selected_files:
         data = torch.load(file_path)
         states = data['states']
@@ -64,11 +66,14 @@ def calc_target_emb(player_name):
             paired_states.append(s_pair)
             paired_mask.append(mask[i])
 
-        paired_states = torch.stack(paired_states).unsqueeze(0).float().to(device)  # [T', 224, 8, 8]
-        paired_mask = torch.tensor(paired_mask, dtype=torch.bool).unsqueeze(0).to(device)  # [T']
+        processed_states = torch.stack(paired_states).unsqueeze(0).float().to(device)  # [T', 224, 8, 8]
+        processed_masks = torch.tensor(paired_mask, dtype=torch.bool).unsqueeze(0).to(device)  # [T']
         with torch.no_grad():
-            _, pred_emb = emb_net(paired_states, paired_mask)
-            return pred_emb
+            _, pred_emb = emb_net(processed_states, processed_masks)
+        embs.append(pred_emb)
+
+    embs = torch.stack(embs).mean(dim=0)
+    return embs
 
 if __name__ == "__main__":
     config = {
