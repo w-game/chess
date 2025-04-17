@@ -54,7 +54,9 @@ class AlphaZeroTrainer:
 
     def self_play(self):
         game = self.game_cls()
-        mcts = self.mcts_cls(self.net, self.reward_fc, self.device, num_simulations=150, c_puct=3.0)
+        root = None               # root of the search tree (kept across moves)
+        mcts = self.mcts_cls(self.net, self.reward_fc, self.device,
+                             num_simulations=400, c_init=1.25, c_base=19652, c_factor=2.0)
         states, pis = [], []
 
         step = 0
@@ -67,13 +69,20 @@ class AlphaZeroTrainer:
             state = game.get_current_state()
 
             temp = self.config['temperature'] if step < 30 else 0
-            pi = mcts.get_action_probabilities(state, step, temp=temp)
+            pi, root = mcts.get_action_probabilities(state, step, temp=temp, root=root)
 
             legal_indices = [game.board.move_to_index(move, game.board.turn, game.board.is_castling(move)) for move in legal_move]
             legal_p = pi[legal_indices]
             legal_p = legal_p / np.sum(legal_p)
             action_idx = np.random.choice(legal_indices, p=legal_p)
             action = game.board.idx_to_move(action_idx, game.board.turn)
+
+            # Reuse the subtree corresponding to chosen action
+            if root is not None and action_idx in root.children:
+                root = root.children[action_idx]
+                root.parent = None
+            else:
+                root = None
 
             game.play_action(action)
 
