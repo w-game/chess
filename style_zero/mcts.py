@@ -33,6 +33,8 @@ class MCTS:
     
     
     def simulate(self, state, node, step=0):
+        if step > 200:
+            return 0, 0
         if state.is_game_over():
             features = state.get_feature_sequence()
             reward_white = self.reward_fc(features, True)
@@ -74,8 +76,7 @@ class MCTS:
 
         best_score, best_action_idx = -float('inf'), None
         for a, child in node.children.items():
-            step_penalty = 0.01 * (step / 200)
-            ucb = child.value() + self.c_puct * child.prior * (np.sqrt(node.visit_count) / (child.visit_count + 1)) - step_penalty
+            ucb = child.value() + self.c_puct * child.prior * (np.sqrt(node.visit_count) / (child.visit_count + 1))
             if ucb > best_score:
                 best_score = ucb
                 best_action_idx = a
