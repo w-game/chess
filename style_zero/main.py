@@ -54,16 +54,13 @@ def calc_target_emb(player_name):
         T = states.size(0)
         mask = torch.zeros(T, dtype=torch.bool)
         color = "white" if "white" in file_path else "black"
-        if color == 'white':
-            indices = range(0, T - 1, 2)  # 白方下在偶数步
-        else:
-            indices = range(1, T - 1, 2)  # 黑方下在奇数步
+        indices = range(0, T - 1, 2) if color else range(1, T - 1, 2)
 
-        for idx, i in enumerate(indices):
-            s_t = states[i]
-            s_tp1 = states[i + 1]
-            s_pair = torch.cat([s_t, s_tp1], dim=0)  # 压缩为 float16
-            paired_states.append(s_pair)
+        for k, i in enumerate(indices):
+            if k >= 100:                # truncate to 100 move‑pairs
+                break
+            pair = np.concatenate([states[i], states[i + 1]], axis=0)  # [224,8,8]
+            paired_states.append(pair)
             paired_mask.append(mask[i])
 
         processed_states = torch.stack(paired_states).unsqueeze(0).float().to(device)  # [T', 224, 8, 8]
