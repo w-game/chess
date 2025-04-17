@@ -54,7 +54,7 @@ class AlphaZeroTrainer:
 
     def self_play(self):
         game = self.game_cls()
-        mcts = self.mcts_cls(self.net, self.reward_fc, self.device, num_simulations=50, c_puct=1.0)
+        mcts = self.mcts_cls(self.net, self.reward_fc, self.device, num_simulations=50, c_puct=3.0)
         states, pis = [], []
 
         step = 0
@@ -65,7 +65,9 @@ class AlphaZeroTrainer:
             legal_move = game.generate_legal_moves()
 
             state = game.get_current_state()
-            pi = mcts.get_action_probabilities(state, temp=self.config['temperature'])
+
+            temp = self.config['temperature'] if step < 30 else 0
+            pi = mcts.get_action_probabilities(state, step, temp=temp)
 
             legal_indices = [game.board.move_to_index(move, game.board.turn, game.board.is_castling(move)) for move in legal_move]
             legal_p = pi[legal_indices]

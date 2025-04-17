@@ -15,7 +15,7 @@ def style_reward(game, color=True):
     Compute cosine‑similarity style reward in the range [-1, 1].
     `color=True`  -> evaluate white;  `False` -> evaluate black.
     """
-    T = min(game.size(0), 200)
+    T = min(game.shape[0], 200)  # max sequence length
     indices = range(0, T - 1, 2) if color else range(1, T - 1, 2)
 
     paired = []

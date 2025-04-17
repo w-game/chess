@@ -32,7 +32,7 @@ class MCTS:
         self.reward_fc = reward_fc
     
     
-    def simulate(self, state, node):
+    def simulate(self, state, node, step=0):
         if state.is_game_over():
             features = state.get_feature_sequence()
             reward_white = self.reward_fc(features, True)
@@ -74,7 +74,8 @@ class MCTS:
 
         best_score, best_action_idx = -float('inf'), None
         for a, child in node.children.items():
-            ucb = child.value() + self.c_puct * child.prior * (np.sqrt(node.visit_count + 1) / (child.visit_count + 1))
+            step_penalty = 0.01 * (step / 200)
+            ucb = child.value() + self.c_puct * child.prior * (np.sqrt(node.visit_count) / (child.visit_count + 1)) - step_penalty
             if ucb > best_score:
                 best_score = ucb
                 best_action_idx = a
@@ -82,7 +83,7 @@ class MCTS:
         real_action = state.idx_to_move(best_action_idx, state.turn)
         next_state = state.copy()
         next_state.push_uci(real_action)
-        v_w, v_b = self.simulate(next_state, node.children[best_action_idx])
+        v_w, v_b = self.simulate(next_state, node.children[best_action_idx], step + 1)
 
         node.visit_count += 1
         if state.turn:
@@ -95,17 +96,18 @@ class MCTS:
     def run(self, state):
         root = TreeNode(None, 1.0)
         for _ in range(self.num_simulations):
-            v_w, v_b = self.simulate(state.copy(), root)
+            v_w, v_b = self.simulate(state.copy(), root, 0)
 
         visits = {a: child.visit_count for a, child in root.children.items()}
+        return visits
+
+    def get_action_probabilities(self, state, step, temp=1.0):
+        visits = self.run(state)
+
         # Show top‑3 visit counts for quick sanity check
         if len(visits) > 0:
             top3 = sorted(visits.items(), key=lambda x: x[1], reverse=True)[:3]
-            print(f"[MCTS] top‑3 root visits: {top3}")
-        return visits
-
-    def get_action_probabilities(self, state, temp=1.0):
-        visits = self.run(state)
+            print(f"[MCTS - Step {step}] top‑3 root visits: {top3}")
 
         if temp == 0:
             best_action = max(visits.items(), key=lambda x: x[1])[0]
