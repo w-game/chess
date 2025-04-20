@@ -42,7 +42,7 @@ class AlphaZeroNet(nn.Module):
         self.value_head = nn.Sequential(
             nn.Linear(2 * 8 * 8, 256),
             nn.ReLU(),
-            nn.Linear(256, 2),      # -> (batch, 2)
+            nn.Linear(256, 1),      # -> (batch, 1)
             nn.Tanh()               # map to [-1,1]
         )
 
@@ -50,6 +50,4 @@ class AlphaZeroNet(nn.Module):
         x = self.bonenet(x)
         policy = self.policy_head(x)
         value = self.value_head(x)
-        v_white = value[:, 0:1]
-        v_black = value[:, 1:2]
-        return policy, v_white, v_black
+        return policy, value

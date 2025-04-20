@@ -60,6 +60,7 @@ class AlphaZeroTrainer:
         self.config = config
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.optimizer = optim.Adam(self.net.parameters(), lr=config['lr'])
+        self.optimizer_b = optim.Adam(self.net_b.parameters(), lr=config['lr'])
         self.memory = deque(maxlen=config['memory_size'])
 
     def self_play(self):
@@ -67,7 +68,7 @@ class AlphaZeroTrainer:
         root = None               # root of the search tree (kept across moves)
         mcts = self.mcts_cls(self.net, self.net_b, self.reward_fc, self.device,
                              num_simulations=400, c_init=1.25, c_base=19652, c_factor=2.0)
-        states, pis = [], []
+        states, pis, turns = [], [], []
 
         step = 0
 
@@ -94,15 +95,18 @@ class AlphaZeroTrainer:
             else:
                 root = None
 
+            turns.append(game.board.turn)
             game.play_action(action)
 
             states.append(state.lcz_features())
             pis.append(pi)
 
+
         sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
         sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
-        for state, pi in zip(states, pis):
-            self.memory.append((state, pi, sim_a, sim_b))
+        for state, pi, turn in zip(states, pis, turns):
+            sim = sim_a if turn else sim_b
+            self.memory.append((state, pi, sim, turn))
         
         return step, sim_a, sim_b
 
@@ -112,31 +116,52 @@ class AlphaZeroTrainer:
             return
 
         batch = random.sample(self.memory, self.config['batch_size'])
-        states, pis, sim_ws, sim_bs = zip(*batch)
+        states, pis, sims, turns = zip(*batch)
 
-        states_np = np.stack(states).astype(np.float32)
-        pis_np    = np.stack(pis).astype(np.float32)
-        sim_ws_np  = np.asarray(sim_ws, dtype=np.float32).reshape(-1,1)
-        sim_bs_np  = np.asarray(sim_bs, dtype=np.float32).reshape(-1,1)
-        target_vw = torch.from_numpy(sim_ws_np).to(self.device)
-        target_vb = torch.from_numpy(sim_bs_np).to(self.device)
+        states_w = []
+        states_b = []
+        pis_w = []
+        pis_b = []
+        vs_w = []
+        vs_b = []
+        for state, pi, sim, turn in zip(states, pis, sims, turns):
+            if turn:
+                states_w.append(state)
+                pis_w.append(pi)
+                vs_w.append(sim)
+            else:
+                states_b.append(state)
+                pis_b.append(pi)
+                vs_b.append(sim)
 
-        states_t  = torch.from_numpy(states_np).to(self.device)
-        target_pi = torch.from_numpy(pis_np).to(self.device)
+        states_w_np = np.stack(states_w).astype(np.float32)
+        pis_w_np    = np.stack(pis_w).astype(np.float32)
+        vs_w_np  = np.asarray(vs_w, dtype=np.float32).reshape(-1,1)
+
+        states_w_t = torch.from_numpy(states_w_np).to(self.device)
+        pis_w_t    = torch.from_numpy(pis_w_np).to(self.device)
+        vs_w_t  = torch.from_numpy(vs_w_np).to(self.device)
+
+        states_b_np = np.stack(states_b).astype(np.float32)
+        pis_b_np    = np.stack(pis_b).astype(np.float32)
+        vs_b_np  = np.asarray(vs_b, dtype=np.float32).reshape(-1,1)
+
+        states_b_t = torch.from_numpy(states_b_np).to(self.device)
+        pis_b_t    = torch.from_numpy(pis_b_np).to(self.device)
+        vs_b_t  = torch.from_numpy(vs_b_np).to(self.device)
+
 
         # ---------- monitoring ----------
         # We'll record per‑batch statistics right after forward pass.
-        logits, pred_vw, pred_vb = self.net(states_t)
+        logits, pred_v = self.net(states_w_t)
         # policy loss
 
         logp = F.log_softmax(logits, dim=1)
-        loss_pi = -(target_pi * logp).sum(dim=1).mean()
+        loss_pi = -(pis_w_t * logp).sum(dim=1).mean()
         # loss_pi = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
 
         # value losses
-        loss_vw = F.mse_loss(pred_vw, target_vw)
-        loss_vb = F.mse_loss(pred_vb, target_vb)
-        loss_z  = loss_vw + loss_vb
+        loss_z = F.mse_loss(pred_v, vs_w_t)
 
         # total
         loss = loss_pi + loss_z
@@ -144,16 +169,34 @@ class AlphaZeroTrainer:
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # ---------- monitoring ----------
+        logits, pred_v = self.net_b(states_b_t)
+        # policy loss
+
+        logp = F.log_softmax(logits, dim=1)
+        loss_pi = -(pis_b_t * logp).sum(dim=1).mean()
+        # loss_pi = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
+
+        # value losses
+        loss_b_z = F.mse_loss(pred_v, vs_b_t)
+
+        # total
+        loss_b = loss_pi + loss_b_z
+
+        self.optimizer_b.zero_grad()
+        loss_b.backward()
+        self.optimizer_b.step()
+
         # ---------- print metrics ----------
-        mean_vw = pred_vw.mean().item()
-        mean_vb = pred_vb.mean().item()
+        mean_v = pred_v.mean().item()
         print(f"[TRAIN] batch={self.config['batch_size']} "
               f"Loss_pi={loss_pi.item():.4f} "
-              f"Loss_vw={loss_vw.item():.4f} "
-              f"Loss_vb={loss_vb.item():.4f} "
+              f"Loss_z={loss_z.item():.4f} "
+              f"Loss_b_pi={loss_b.item():.4f} "
+              f"Loss_b_z={loss_b_z.item():.4f} "
               f"Total={loss.item():.4f} "
-              f"mean_pred_vw={mean_vw:.3f} "
-              f"mean_pred_vb={mean_vb:.3f}")
+              f"mean_pred_v={mean_v:.3f}")
 
     def run(self):
         for iteration in range(self.config['num_iterations']):
