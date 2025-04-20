@@ -133,7 +133,7 @@ if __name__ == "__main__":
     print(f"target_sim: {target_sim:.4f}")
 
     net = AlphaZeroNet().to(device)
-    # net_b = AlphaZeroNet().to(device)
+    net_b = AlphaZeroNet().to(device)
 
-    trainer = AlphaZeroTrainer(Game, net, style_reward, MCTS, config, device)
+    trainer = AlphaZeroTrainer(Game, net, net_b, style_reward, MCTS, config, device)
     trainer.run()

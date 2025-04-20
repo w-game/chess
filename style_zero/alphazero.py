@@ -51,9 +51,10 @@ class Game:
 
 
 class AlphaZeroTrainer:
-    def __init__(self, game_cls, net, reward_fc, mcts_cls, config, device=None):
+    def __init__(self, game_cls, net, net_b, reward_fc, mcts_cls, config, device=None):
         self.game_cls = game_cls
         self.net = net
+        self.net_b = net_b
         self.reward_fc = reward_fc
         self.mcts_cls = mcts_cls
         self.config = config
@@ -64,7 +65,7 @@ class AlphaZeroTrainer:
     def self_play(self):
         game = self.game_cls()
         root = None               # root of the search tree (kept across moves)
-        mcts = self.mcts_cls(self.net, self.reward_fc, self.device,
+        mcts = self.mcts_cls(self.net, self.net_b, self.reward_fc, self.device,
                              num_simulations=400, c_init=1.25, c_base=19652, c_factor=2.0)
         states, pis = [], []
 

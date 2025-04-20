@@ -24,13 +24,14 @@ def softmax(x):
 
 
 class MCTS:
-    def __init__(self, net, reward_fc, device=None, *,
+    def __init__(self, net, net_b, reward_fc, device=None, *,
                  num_simulations=20,
                  c_init=1.25,          # AlphaZero‑style dynamic cpuct
                  c_base=19652,
                  c_factor=2.0,
                  gamma=0.995):
         self.net = net
+        self.net_b = net_b
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_simulations = num_simulations
         self.c_init   = c_init
@@ -59,14 +60,17 @@ class MCTS:
                 node.total_value += reward_white
             else:
                 node.total_value += reward_black
-            
+
             return reward_white, reward_black
 
         if not node.children:
             features = state.lcz_features()
             features = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
             with torch.no_grad():
-                policy_logits, v_w, v_b = self.net.forward(features)
+                if state.turn:
+                    policy_logits, v_w = self.net.forward(features)
+                else:
+                    policy_logits, v_b = self.net_b.forward(features)
                 
             policy = softmax(policy_logits.detach().cpu().numpy().flatten())
             legal_moves = state.generate_legal_moves()
@@ -86,10 +90,10 @@ class MCTS:
 
             if state.turn:
                 node.total_value += v_w.item()
+                return v_w.item(), 0
             else:
                 node.total_value += v_b.item()
-
-            return v_w, v_b
+                return 0, v_b.item()
 
         best_score, best_action_idx = -float('inf'), None
         for a, child in node.children.items():
