@@ -29,7 +29,7 @@ class MCTS:
                  c_init=1.25,          # AlphaZero‑style dynamic cpuct
                  c_base=19652,
                  c_factor=2.0,
-                 gamma=0.85):
+                 gamma=0.995):
         self.net = net
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_simulations = num_simulations
@@ -74,7 +74,7 @@ class MCTS:
 
             # --- create child nodes ---
             if node.parent is None:
-                noise = np.random.dirichlet([0.03] * len(legal_idxs))
+                noise = np.random.dirichlet([0.3] * len(legal_idxs))
 
             for i, a_idx in enumerate(legal_idxs):
                 prior = policy[a_idx]

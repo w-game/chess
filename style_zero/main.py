@@ -10,7 +10,7 @@ from mcts import MCTS
 from model import AlphaZeroNet
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def style_reward(game, color=True):
+def style_reward(game, color=True, min_value=0.2, max_value=0.9):
     """
     Compute cosine‑similarity style reward in the range [-1, 1].
     `color=True`  -> evaluate white;  `False` -> evaluate black.
@@ -38,7 +38,10 @@ def style_reward(game, color=True):
     with torch.no_grad():
         _, pred_emb = emb_net(states, mask)
 
-    return torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0), dim=1).mean().item()
+    raw_sim = torch.cosine_similarity(pred_emb, style_emb.unsqueeze(0), dim=1).mean().item()
+    # Normalize to [-1, 1]
+    norm_sim = (raw_sim - min_value) / (max_value - min_value)
+    return norm_sim
 
 def pad_or_truncate(tensor, target_len, pad_value=0, dim=0):
     """

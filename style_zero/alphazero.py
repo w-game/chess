@@ -27,7 +27,16 @@ class Game:
             raise ValueError("Illegal move")
 
     def is_game_over(self):
-        return self.board.is_game_over()
+        # 原有的检查
+        if self.board.is_game_over():
+            return True
+        # 三次重复局面
+        if self.board.pc_board.can_claim_threefold_repetition():
+            return True
+        # 50 步走子不吃子不走兵
+        if self.board.pc_board.halfmove_clock >= 100:
+            return True
+        return False
 
     def get_winner(self):
         if self.board.is_checkmate():
@@ -118,7 +127,10 @@ class AlphaZeroTrainer:
         # We'll record per‑batch statistics right after forward pass.
         logits, pred_vw, pred_vb = self.net(states_t)
         # policy loss
-        loss_pi = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
+
+        logp = F.log_softmax(logits, dim=1)
+        loss_pi = -(target_pi * logp).sum(dim=1).mean()
+        # loss_pi = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
 
         # value losses
         loss_vw = F.mse_loss(pred_vw, target_vw)
@@ -149,7 +161,9 @@ class AlphaZeroTrainer:
                 step, sim_a, sim_b = self.self_play()
                 print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed with {step} steps. sim_a: {sim_a}, sim_b: {sim_b}")
 
-            self.train()
+            train_steps = self.config.get('train_steps_per_iter', 1)
+            for _ in range(train_steps):
+                self.train()
 
             if (iteration + 1) % self.config['save_interval'] == 0:
                 torch.save(self.net.state_dict(), f"./models/model_{iteration+1}.pth")
