@@ -5,12 +5,13 @@ import torch
 
 
 class TreeNode:
-    def __init__(self, parent, prior):
+    def __init__(self, parent, prior, turn):
         self.parent = parent
         self.children = {}
         self.visit_count = 0
         self.total_value = 0
         self.prior = prior
+        self.turn = turn 
 
     def value(self):
         if self.visit_count == 0:
@@ -47,90 +48,87 @@ class MCTS:
         """
         return self.c_init + self.c_factor * np.log((parent_visits + self.c_base + 1) / self.c_base)
     
+    def backup(self, node, v_w, v_b):
+        """
+        Back up the value of the node to its parent.
+        """
+        while node is not None:
+            if node.turn:
+                node.total_value += v_w
+            else:
+                node.total_value += v_b
+            node.visit_count += 1
+            node = node.parent
+    
     
     def simulate(self, state, node, step=0):
-        if state.is_game_over():
-            features = state.get_feature_sequence()
-            reward_white = self.reward_fc(features, True) * (self.gamma ** step)
-            reward_black = self.reward_fc(features, False) * (self.gamma ** step)
+        while True:
+            if state.is_game_over():
+                features = state.get_feature_sequence()
+                reward_white = self.reward_fc(features, True) * (self.gamma ** step)
+                reward_black = self.reward_fc(features, False) * (self.gamma ** step)
 
-            node.visit_count += 1
+                outcome = state.pc_board.outcome()  
+                # outcome 是 None（游戏未结束）或一个 chess.Outcome 对象
+                if outcome is not None:
+                    winner = outcome.winner    # True 白胜，False 黑胜，None 平局
+                    if winner == state.turn:
+                        reward_white = reward_white * 0.8 + 0.2
+                        reward_black = reward_black * 0.8 - 0.2
+                    else:
+                        reward_white = reward_white * 0.8 - 0.2
+                        reward_black = reward_black * 0.8 + 0.2
 
-            outcome = state.pc_board.outcome()  
-            # outcome 是 None（游戏未结束）或一个 chess.Outcome 对象
-            if outcome is not None:
-                winner = outcome.winner    # True 白胜，False 黑胜，None 平局
-                if winner == state.turn:
-                    reward_white = reward_white * 0.8 + 0.2
-                    reward_black = reward_black * 0.8 - 0.2
-                else:
-                    reward_white = reward_white * 0.8 - 0.2
-                    reward_black = reward_black * 0.8 + 0.2
+                    if winner is None:
+                        reward_white = 0.0
+                        reward_black = 0.0
+                        return reward_white, reward_black
+                    
+                self.backup(node, reward_white, reward_black)
+                return reward_white, reward_black
 
-                if winner is None:
-                    reward_white = 0.0
-                    reward_black = 0.0
-                    return reward_white, reward_black
+            if not node.children:
+                features = state.lcz_features()
+                features = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
+                with torch.no_grad():
+                    if state.turn:
+                        policy_logits, v_w = self.net.forward(features)
+                    else:
+                        policy_logits, v_b = self.net_b.forward(features)
+                    
+                policy = softmax(policy_logits.detach().cpu().numpy().flatten())
+                legal_moves = state.generate_legal_moves()
+                legal_idxs = [state.move_to_index(a, state.turn, state.is_castling(a)) for a in legal_moves]
 
-            if state.turn:
-                node.total_value += reward_white
-            else:
-                node.total_value += reward_black
-
-            return reward_white, reward_black
-
-        if not node.children:
-            features = state.lcz_features()
-            features = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                if state.turn:
-                    policy_logits, v_w = self.net.forward(features)
-                else:
-                    policy_logits, v_b = self.net_b.forward(features)
-                
-            policy = softmax(policy_logits.detach().cpu().numpy().flatten())
-            legal_moves = state.generate_legal_moves()
-            legal_idxs = [state.move_to_index(a, state.turn, state.is_castling(a)) for a in legal_moves]
-
-            # --- create child nodes ---
-            if node.parent is None:
-                noise = np.random.dirichlet([0.3] * len(legal_idxs))
-
-            for i, a_idx in enumerate(legal_idxs):
-                prior = policy[a_idx]
+                # --- create child nodes ---
                 if node.parent is None:
-                    prior = 0.75 * prior + 0.25 * noise[i]
-                node.children[a_idx] = TreeNode(node, float(prior))
+                    noise = np.random.dirichlet([0.3] * len(legal_idxs))
 
-            node.visit_count += 1
+                for i, a_idx in enumerate(legal_idxs):
+                    prior = policy[a_idx]
+                    if node.parent is None:
+                        prior = 0.75 * prior + 0.25 * noise[i]
+                    node.children[a_idx] = TreeNode(node, float(prior), not node.turn)
 
-            if state.turn:
-                node.total_value += v_w.item()
-                return v_w.item(), 0
-            else:
-                node.total_value += v_b.item()
-                return 0, v_b.item()
+                self.backup(node, v_w, v_b)
+                
+                return v_w, v_b
 
-        best_score, best_action_idx = -float('inf'), None
-        for a, child in node.children.items():
-            cpuct_coeff = self._dyn_cpuct(node.visit_count)
-            ucb = child.value() + cpuct_coeff * child.prior * (np.sqrt(node.visit_count) / (child.visit_count + 1))
-            if ucb > best_score:
-                best_score = ucb
-                best_action_idx = a
+            best_score, best_action_idx = -float('inf'), None
+            for a, child in node.children.items():
+                cpuct_coeff = self._dyn_cpuct(node.visit_count)
+                ucb = child.value() + cpuct_coeff * child.prior * (np.sqrt(node.visit_count) / (child.visit_count + 1))
+                if ucb > best_score:
+                    best_score = ucb
+                    best_action_idx = a
 
-        real_action = state.idx_to_move(best_action_idx, state.turn)
-        next_state = state.copy()
-        next_state.push_uci(real_action)
-        v_w, v_b = self.simulate(next_state, node.children[best_action_idx], step + 1)
+            real_action = state.idx_to_move(best_action_idx, state.turn)
+            next_state = state.copy()
+            next_state.push_uci(real_action)
+            state = next_state
+            step += 1
 
-        node.visit_count += 1
-        if state.turn:
-            node.total_value += v_w
-        else:
-            node.total_value += v_b
-
-        return v_w, v_b
+            continue
     
     def run(self, state, root=None, step=0):
         if root is None:
