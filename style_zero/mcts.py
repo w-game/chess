@@ -72,18 +72,13 @@ class MCTS:
                 # outcome 是 None（游戏未结束）或一个 chess.Outcome 对象
                 if outcome is not None:
                     winner = outcome.winner    # True 白胜，False 黑胜，None 平局
-                    if winner == state.turn:
+                    if winner:
                         reward_white = reward_white * 0.8 + 0.2
                         reward_black = reward_black * 0.8 - 0.2
-                    else:
+                    elif not winner:
                         reward_white = reward_white * 0.8 - 0.2
                         reward_black = reward_black * 0.8 + 0.2
 
-                    if winner is None:
-                        reward_white = 0.0
-                        reward_black = 0.0
-                        return reward_white, reward_black
-                    
                 self.backup(node, reward_white, reward_black)
                 return reward_white, reward_black
 
@@ -143,16 +138,11 @@ class MCTS:
     def get_action_probabilities(self, state, step, temp=1.0, root=None):
         visits, root = self.run(state, root, step)
 
-        # Show top‑3 visit counts for quick sanity check
-        if len(visits) > 0:
-            top3 = sorted(visits.items(), key=lambda x: x[1], reverse=True)[:3]
-            print(f"[MCTS - Step {step}] top‑3 root visits: {top3}")
-
         if temp == 0:
             best_action = max(visits.items(), key=lambda x: x[1])[0]
             probs = np.zeros(1858)
             probs[best_action] = 1.0
-            return probs, root
+            return probs, root, visits
         else:
             legal_indices = list(visits.keys())
             counts = np.array([visits[a] for a in legal_indices], dtype=np.float32)
@@ -163,4 +153,4 @@ class MCTS:
             for idx, count in zip(legal_indices, counts):
                 probs[idx] = count
             probs /= probs.sum()
-            return probs, root
+            return probs, root, visits

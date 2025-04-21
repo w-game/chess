@@ -80,7 +80,7 @@ class AlphaZeroTrainer:
             state = game.get_current_state()
 
             temp = self.config['temperature'] if step < 30 else 0
-            pi, root = mcts.get_action_probabilities(state, step, temp=temp, root=root)
+            pi, root, visits = mcts.get_action_probabilities(state, step, temp=temp, root=root)
 
             legal_indices = [game.board.move_to_index(move, game.board.turn, game.board.is_castling(move)) for move in legal_move]
             legal_p = pi[legal_indices]
@@ -89,11 +89,20 @@ class AlphaZeroTrainer:
             action = game.board.idx_to_move(action_idx, game.board.turn)
 
             # Reuse the subtree corresponding to chosen action
-            if root is not None and action_idx in root.children:
-                root = root.children[action_idx]
-                root.parent = None
-            else:
-                root = None
+            # if root is not None and action_idx in root.children:
+            #     root = root.children[action_idx]
+            #     root.parent = None
+            # else:
+            #     root = None
+
+            
+            # Show top‑3 visit counts for quick sanity check
+            if len(visits) > 0:
+                top3 = sorted(visits.items(), key=lambda x: x[1], reverse=True)[:3]
+                print(f"[MCTS - Step {step}] top‑3 root visits: {top3}, Selected action: {action}({action_idx})")
+
+
+            root = None  # Reset root for the next move
 
             turns.append(game.board.turn)
             game.play_action(action)
@@ -101,9 +110,18 @@ class AlphaZeroTrainer:
             states.append(state.lcz_features())
             pis.append(pi)
 
-
         sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
         sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
+        outcome = game.board.pc_board.outcome()
+        if outcome is not None:
+            winner = outcome.winner
+            if winner:
+                sim_a = sim_a * 0.8 + 0.2
+                sim_b = sim_b * 0.8 - 0.2
+            elif not winner:
+                sim_a = sim_a * 0.8 - 0.2
+                sim_b = sim_b * 0.8 + 0.2
+
         for state, pi, turn in zip(states, pis, turns):
             sim = sim_a if turn else sim_b
             self.memory.append((state, pi, sim, turn))
