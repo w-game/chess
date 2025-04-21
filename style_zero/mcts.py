@@ -25,15 +25,13 @@ def softmax(x):
 
 
 class MCTS:
-    def __init__(self, net, net_b, reward_fc, turn, device=None, *,
+    def __init__(self, net, reward_fc, device=None, *,
                  num_simulations=20,
                  c_init=1.25,          # AlphaZero‑style dynamic cpuct
                  c_base=19652,
                  c_factor=2.0,
                  gamma=0.995):
         self.net = net
-        self.net_b = net_b
-        self.turn = turn
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_simulations = num_simulations
         self.c_init   = c_init
@@ -49,15 +47,16 @@ class MCTS:
         """
         return self.c_init + self.c_factor * np.log((parent_visits + self.c_base + 1) / self.c_base)
     
-    def backup(self, node, v_w, v_b):
+    def backup(self, node, v, v_w, v_b):
         """
         Back up the value of the node to its parent.
         """
+
         while node is not None:
             if node.turn:
-                node.total_value += v_w
+                node.total_value += v + v_w
             else:
-                node.total_value += v_b
+                node.total_value -= v - v_b
             node.visit_count += 1
             node = node.parent
     
@@ -69,28 +68,24 @@ class MCTS:
                 reward_white = self.reward_fc(features, True) * (self.gamma ** step)
                 reward_black = self.reward_fc(features, False) * (self.gamma ** step)
 
-                outcome = state.pc_board.outcome()  
-                # outcome 是 None（游戏未结束）或一个 chess.Outcome 对象
+                outcome = state.pc_board.outcome()
                 if outcome is not None:
-                    winner = outcome.winner    # True 白胜，False 黑胜，None 平局
-                    if self.turn and winner == True:
-                        reward_white = reward_white * 0.8 + 0.2
+                    winner = outcome.winner    # True 白胜, False 黑胜, None 平局
+                    if winner == True:
+                        v_win = 1
+                    elif winner == False:
+                        v_win = -1
+                else:
+                    v_win = 0
 
-                    if not self.turn and winner == False:
-                        reward_black = reward_black * 0.8 + 0.2
-
-                self.backup(node, reward_white, reward_black)
-                return reward_white, reward_black
+                self.backup(node, v_win, reward_white, reward_black)
+                return v_win, reward_white, reward_black
 
             if not node.children:
                 features = state.lcz_features()
                 features = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
-                v_w, v_b = 0.0, 0.0
                 with torch.no_grad():
-                    if state.turn:
-                        policy_logits, v_w = self.net.forward(features)
-                    else:
-                        policy_logits, v_b = self.net_b.forward(features)
+                    policy_logits, v = self.net.forward(features)
                     
                 policy = softmax(policy_logits.detach().cpu().numpy().flatten())
                 legal_moves = state.generate_legal_moves()
@@ -106,14 +101,17 @@ class MCTS:
                         prior = 0.75 * prior + 0.25 * noise[i]
                     node.children[a_idx] = TreeNode(node, float(prior), not node.turn)
 
-                self.backup(node, v_w, v_b)
-                
-                return v_w, v_b
+                self.backup(node, v, 0, 0)
+    
+                return v, 0, 0
 
             best_score, best_action_idx = -float('inf'), None
             for a, child in node.children.items():
                 cpuct_coeff = self._dyn_cpuct(node.visit_count)
-                ucb = child.value() + cpuct_coeff * child.prior * (np.sqrt(node.visit_count) / (child.visit_count + 1))
+                value = child.value()
+                if not node.turn:
+                    value = -value
+                ucb = value + cpuct_coeff * child.prior * (np.sqrt(node.visit_count) / (child.visit_count + 1))
                 if ucb > best_score:
                     best_score = ucb
                     best_action_idx = a
@@ -129,7 +127,7 @@ class MCTS:
         if root is None:
             root = TreeNode(None, 1.0, True)
         for _ in range(self.num_simulations):
-            v_w, v_b = self.simulate(state.copy(), root, step)
+            v, v_w, v_b = self.simulate(state.copy(), root, step)
 
         visits = {a: child.visit_count for a, child in root.children.items()}
         # return both visits and the updated root so callers can reuse subtree
