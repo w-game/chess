@@ -205,8 +205,8 @@ class AlphaZeroTrainer:
                 step, sim_a, sim_b = self.self_play()
                 print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed with {step} steps. sim_a: {sim_a}, sim_b: {sim_b}")
 
-            train_steps = self.config.get('train_steps_per_iter', 1)
-            for _ in range(train_steps):
+            # train_steps = self.config.get('train_steps_per_iter', 1)
+            # for _ in range(train_steps):
                 self.train()
 
             if (iteration + 1) % self.config['save_interval'] == 0:

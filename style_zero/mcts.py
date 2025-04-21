@@ -56,6 +56,22 @@ class MCTS:
 
             node.visit_count += 1
 
+            outcome = state.pc_board.outcome()  
+            # outcome 是 None（游戏未结束）或一个 chess.Outcome 对象
+            if outcome is not None:
+                winner = outcome.winner    # True 白胜，False 黑胜，None 平局
+                if winner == state.turn:
+                    reward_white = reward_white * 0.8 + 0.2
+                    reward_black = reward_black * 0.8 - 0.2
+                else:
+                    reward_white = reward_white * 0.8 - 0.2
+                    reward_black = reward_black * 0.8 + 0.2
+
+                if winner is None:
+                    reward_white = 0.0
+                    reward_black = 0.0
+                    return reward_white, reward_black
+
             if state.turn:
                 node.total_value += reward_white
             else:
