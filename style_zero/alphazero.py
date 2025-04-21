@@ -63,7 +63,7 @@ class AlphaZeroTrainer:
         self.optimizer_b = optim.Adam(self.net_b.parameters(), lr=config['lr'])
         self.memory = deque(maxlen=config['memory_size'])
 
-    def self_play(self):
+    def self_play(self, turn):
         game = self.game_cls()
         root = None               # root of the search tree (kept across moves)
         mcts = self.mcts_cls(self.net, self.net_b, self.reward_fc, self.device,
@@ -121,12 +121,24 @@ class AlphaZeroTrainer:
             elif not winner:
                 sim_a = sim_a * 0.8 - 0.2
                 sim_b = sim_b * 0.8 + 0.2
+        
+        if turn:
+            sim = sim_a
+        else:
+            sim = sim_b
 
-        for state, pi, turn in zip(states, pis, turns):
-            sim = sim_a if turn else sim_b
-            self.memory.append((state, pi, sim, turn))
+        for state, pi, t in zip(states, pis, turns):
+            if turn == t:
+                self.memory.append((state, pi, sim, turn))
         
         return step, sim_a, sim_b
+    
+    def self_play(self, idx):
+        step_a, sim_a_a, sim_b_a = self.self_play(turn=True)
+        step_b, sim_a_b, sim_b_b = self.self_play(turn=False)
+
+        print(f"Player White {idx + 1}/{self.config['num_self_play_games']}: {step_a} Step {sim_a_a:.4f}, {sim_a_b:.4f}")
+        print(f"Player Black {idx + 1}/{self.config['num_self_play_games']}: {step_b} Step {sim_b_a:.4f}, {sim_b_b:.4f}")
 
 
     def train(self):
@@ -171,57 +183,62 @@ class AlphaZeroTrainer:
 
         # ---------- monitoring ----------
         # We'll record per‑batch statistics right after forward pass.
-        logits, pred_v = self.net(states_w_t)
+        logits, pred_v_a = self.net(states_w_t)
         # policy loss
 
         logp = F.log_softmax(logits, dim=1)
-        loss_pi = -(pis_w_t * logp).sum(dim=1).mean()
+        loss_pi_a = -(pis_w_t * logp).sum(dim=1).mean()
         # loss_pi = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
 
         # value losses
-        loss_z = F.mse_loss(pred_v, vs_w_t)
+        loss_z = F.mse_loss(pred_v_a, vs_w_t)
 
         # total
-        loss = loss_pi + loss_z
+        loss_a = loss_pi_a + loss_z
 
         self.optimizer.zero_grad()
-        loss.backward()
+        loss_a.backward()
         self.optimizer.step()
 
+        mean_v = pred_v_a.mean().item()
+
+        print(f"[TRAIN] White: "
+              f"Loss_pi={loss_pi_a.item():.4f} "
+              f"Loss_z={loss_z.item():.4f} "
+              f"Total={loss_a.item():.4f} "
+              f"mean_pred_v={mean_v:.3f}")
+
         # ---------- monitoring ----------
-        logits, pred_v = self.net_b(states_b_t)
+        logits, pred_v_b = self.net_b(states_b_t)
         # policy loss
 
         logp = F.log_softmax(logits, dim=1)
-        loss_pi = -(pis_b_t * logp).sum(dim=1).mean()
-        # loss_pi = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
+        loss_pi_b = -(pis_b_t * logp).sum(dim=1).mean()
+        # loss_pi_b = F.kl_div(F.log_softmax(logits,1), target_pi, reduction='batchmean')
 
         # value losses
-        loss_b_z = F.mse_loss(pred_v, vs_b_t)
+        loss_b_z = F.mse_loss(pred_v_b, vs_b_t)
 
         # total
-        loss_b = loss_pi + loss_b_z
+        loss_b = loss_pi_b + loss_b_z
 
         self.optimizer_b.zero_grad()
         loss_b.backward()
         self.optimizer_b.step()
 
         # ---------- print metrics ----------
-        mean_v = pred_v.mean().item()
-        print(f"[TRAIN] batch={self.config['batch_size']} "
-              f"Loss_pi={loss_pi.item():.4f} "
-              f"Loss_z={loss_z.item():.4f} "
-              f"Loss_b_pi={loss_b.item():.4f} "
-              f"Loss_b_z={loss_b_z.item():.4f} "
-              f"Total={loss.item():.4f} "
-              f"mean_pred_v={mean_v:.3f}")
+        mean_b_v = pred_v_b.mean().item()
+        print(f"[TRAIN] Black: "
+              f"Loss_pi={loss_pi_b.item():.4f} "
+              f"Loss_z={loss_b_z.item():.4f} "
+              f"Total={loss_b.item():.4f} "
+              f"mean_pred_v={mean_b_v:.3f}")
 
     def run(self):
         for iteration in range(self.config['num_iterations']):
             print(f"Iteration {iteration + 1}/{self.config['num_iterations']}")
             for idx in range(self.config['num_self_play_games']):
                 step, sim_a, sim_b = self.self_play()
-                print(f"Self-play game {idx + 1}/{self.config['num_self_play_games']} completed with {step} steps. sim_a: {sim_a}, sim_b: {sim_b}")
 
             # train_steps = self.config.get('train_steps_per_iter', 1)
             # for _ in range(train_steps):
