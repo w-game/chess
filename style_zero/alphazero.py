@@ -63,7 +63,7 @@ class AlphaZeroTrainer:
         self.optimizer_b = optim.Adam(self.net_b.parameters(), lr=config['lr'])
         self.memory = deque(maxlen=config['memory_size'])
 
-    def self_play(self, turn):
+    def self_play_turn(self, turn):
         game = self.game_cls()
         root = None               # root of the search tree (kept across moves)
         mcts = self.mcts_cls(self.net, self.net_b, self.reward_fc, turn, self.device,
@@ -112,33 +112,33 @@ class AlphaZeroTrainer:
 
         sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
         sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
-        outcome = game.board.pc_board.outcome()
-        if outcome is not None:
-            winner = outcome.winner
-            if winner:
-                sim_a = sim_a * 0.8 + 0.2
-                sim_b = sim_b * 0.8 - 0.2
-            elif not winner:
-                sim_a = sim_a * 0.8 - 0.2
-                sim_b = sim_b * 0.8 + 0.2
-        
+
         if turn:
             sim = sim_a
         else:
             sim = sim_b
+        
+        outcome = game.board.pc_board.outcome()
+        if outcome is not None:
+            winner = outcome.winner
+            if turn and winner == True:
+                sim = sim_a * 0.8 + 0.2
 
+            if not turn and winner == False:
+                sim = sim_b * 0.8 + 0.2
+        
         for state, pi, t in zip(states, pis, turns):
             if turn == t:
                 self.memory.append((state, pi, sim, turn))
         
-        return step, sim_a, sim_b
+        return step, sim_a, sim_b, winner
     
     def self_play(self, idx):
-        step_a, sim_a_a, sim_b_a = self.self_play(turn=True)
-        step_b, sim_a_b, sim_b_b = self.self_play(turn=False)
+        step_a, sim_a_a, sim_b_a, winner_a = self.self_play_turn(turn=True)
+        step_b, sim_a_b, sim_b_b, winner_b = self.self_play_turn(turn=False)
 
-        print(f"Player White {idx + 1}/{self.config['num_self_play_games']}: {step_a} Step {sim_a_a:.4f}, {sim_a_b:.4f}")
-        print(f"Player Black {idx + 1}/{self.config['num_self_play_games']}: {step_b} Step {sim_b_a:.4f}, {sim_b_b:.4f}")
+        print(f"Player White {idx + 1}/{self.config['num_self_play_games']}: {step_a} Step {sim_a_a:.4f}, {sim_a_b:.4f}, {winner_a}")
+        print(f"Player Black {idx + 1}/{self.config['num_self_play_games']}: {step_b} Step {sim_b_a:.4f}, {sim_b_b:.4f}, {winner_b}")
 
 
     def train(self):
@@ -238,7 +238,7 @@ class AlphaZeroTrainer:
         for iteration in range(self.config['num_iterations']):
             print(f"Iteration {iteration + 1}/{self.config['num_iterations']}")
             for idx in range(self.config['num_self_play_games']):
-                step, sim_a, sim_b = self.self_play()
+                self.self_play(idx)
 
             # train_steps = self.config.get('train_steps_per_iter', 1)
             # for _ in range(train_steps):
