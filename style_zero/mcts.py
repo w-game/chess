@@ -25,7 +25,7 @@ def softmax(x):
 
 
 class MCTS:
-    def __init__(self, net, net_b, reward_fc, device=None, *,
+    def __init__(self, net, net_b, reward_fc, turn, device=None, *,
                  num_simulations=20,
                  c_init=1.25,          # AlphaZero‑style dynamic cpuct
                  c_base=19652,
@@ -33,6 +33,7 @@ class MCTS:
                  gamma=0.995):
         self.net = net
         self.net_b = net_b
+        self.turn = turn
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_simulations = num_simulations
         self.c_init   = c_init
@@ -72,11 +73,10 @@ class MCTS:
                 # outcome 是 None（游戏未结束）或一个 chess.Outcome 对象
                 if outcome is not None:
                     winner = outcome.winner    # True 白胜，False 黑胜，None 平局
-                    if winner:
+                    if self.turn and winner == True:
                         reward_white = reward_white * 0.8 + 0.2
-                        reward_black = reward_black * 0.8 - 0.2
-                    elif not winner:
-                        reward_white = reward_white * 0.8 - 0.2
+
+                    if not self.turn and winner == False:
                         reward_black = reward_black * 0.8 + 0.2
 
                 self.backup(node, reward_white, reward_black)

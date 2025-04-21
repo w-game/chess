@@ -66,7 +66,7 @@ class AlphaZeroTrainer:
     def self_play(self, turn):
         game = self.game_cls()
         root = None               # root of the search tree (kept across moves)
-        mcts = self.mcts_cls(self.net, self.net_b, self.reward_fc, self.device,
+        mcts = self.mcts_cls(self.net, self.net_b, self.reward_fc, turn, self.device,
                              num_simulations=400, c_init=1.25, c_base=19652, c_factor=2.0)
         states, pis, turns = [], [], []
 
