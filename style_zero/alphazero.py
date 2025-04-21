@@ -133,7 +133,7 @@ class AlphaZeroTrainer:
     
     def self_play(self, idx):
         # play as white
-        step_a, sim_a, sim_b = self.self_play_game(True)
+        step_a, sim_a, sim_b = self.self_play_game()
         print(f"Player White {idx + 1}/{self.config['num_self_play_games']}: {step_a} Step {sim_a:.4f}, {sim_b:.4f}")
         # play as black
         # step_b, sim_a_b, sim_b_b = self.self_play_game(False)

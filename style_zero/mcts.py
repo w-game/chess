@@ -56,7 +56,7 @@ class MCTS:
             if node.turn:
                 node.total_value += v + v_w
             else:
-                node.total_value -= v - v_b
+                node.total_value += v - v_b
             node.visit_count += 1
             node = node.parent
     
