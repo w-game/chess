@@ -129,14 +129,14 @@ class MCTS:
         if root is None:
             root = TreeNode(None, 1.0, True)
         for _ in range(self.num_simulations):
-            v_w, v_b = self.simulate(state.copy(), root)
+            v_w, v_b = self.simulate(state.copy(), root, step)
 
         visits = {a: child.visit_count for a, child in root.children.items()}
         # return both visits and the updated root so callers can reuse subtree
         return visits, root
 
     def get_action_probabilities(self, state, step, temp=1.0, root=None):
-        visits, root = self.run(state, root, step)
+        visits, root = self.run(state, root)
 
         if temp == 0:
             best_action = max(visits.items(), key=lambda x: x[1])[0]
@@ -147,7 +147,8 @@ class MCTS:
             legal_indices = list(visits.keys())
             counts = np.array([visits[a] for a in legal_indices], dtype=np.float32)
             if counts.sum() == 0:
-                return np.ones(1858) / 1858, root
+                probs = np.ones(1858, dtype=np.float32) / 1858
+                return probs, root, visits
             counts = counts ** (1.0 / temp)
             probs = np.zeros(1858, dtype=np.float32)
             for idx, count in zip(legal_indices, counts):
