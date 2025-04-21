@@ -90,6 +90,7 @@ class MCTS:
             if not node.children:
                 features = state.lcz_features()
                 features = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
+                v_w, v_b = 0.0, 0.0
                 with torch.no_grad():
                     if state.turn:
                         policy_logits, v_w = self.net.forward(features)
@@ -126,13 +127,12 @@ class MCTS:
             next_state = state.copy()
             next_state.push_uci(real_action)
             state = next_state
+            node = node.children[best_action_idx]
             step += 1
-
-            continue
     
     def run(self, state, root=None, step=0):
         if root is None:
-            root = TreeNode(None, 1.0)
+            root = TreeNode(None, 1.0, True)
         for _ in range(self.num_simulations):
             v_w, v_b = self.simulate(state.copy(), root, step)
 
