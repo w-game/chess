@@ -134,7 +134,7 @@ class MCTS:
         if root is None:
             root = TreeNode(None, 1.0, True)
         for _ in range(self.num_simulations):
-            v_w, v_b = self.simulate(state.copy(), root, step)
+            v_w, v_b = self.simulate(state.copy(), root)
 
         visits = {a: child.visit_count for a, child in root.children.items()}
         # return both visits and the updated root so callers can reuse subtree
