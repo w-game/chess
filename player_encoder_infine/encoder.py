@@ -66,7 +66,7 @@ class PositionalEncoding(nn.Module):
     
 class TransformerEncoder(nn.Module):
     def __init__(self, cnn_in_channels=112, state_embed_dim=256, transformer_d_model=256,
-                 num_heads=8, num_layers=3, dropout=0.1, max_seq_len=100):
+                 num_heads=8, num_layers=3, dropout=0.1):
         """
         参数说明：
           cnn_in_channels: 状态输入通道数（例如112）
@@ -79,7 +79,7 @@ class TransformerEncoder(nn.Module):
         """
         super(TransformerEncoder, self).__init__()
         self.state_encoder = BoardCNNEncoder(in_channels=cnn_in_channels, out_dim=state_embed_dim)
-        self.pos_encoder = PositionalEncoding(d_model=transformer_d_model, dropout=dropout, max_len=max_seq_len)
+        self.pos_encoder = PositionalEncoding(d_model=transformer_d_model, dropout=dropout)
         encoder_layer = nn.TransformerEncoderLayer(d_model=transformer_d_model, nhead=num_heads, dropout=dropout, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(transformer_d_model, transformer_d_model)

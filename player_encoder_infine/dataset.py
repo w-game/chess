@@ -11,13 +11,12 @@ from torch.utils.data import Dataset
 
 
 class MetaStyleDataset(Dataset):
-    def __init__(self, player_files, data_len, N=5, K=5, Q=5, max_len=100):
+    def __init__(self, player_files, data_len, N=5, K=5, Q=5):
         self.player_dataset = PlayerDataset(player_files)
         self.data_len = data_len
         self.N = N
         self.K = K
         self.Q = Q
-        self.max_len = max_len
 
     def __len__(self):
         return self.data_len
@@ -25,8 +24,6 @@ class MetaStyleDataset(Dataset):
     def set_creator(self, sub_games, label_id):
         states, masks, labels = [], [], []
         for (s, m, _) in sub_games:
-            # s = pad_or_truncate(s, self.max_len, dim=0)  # s: [T, 224, 8, 8]
-            # m = pad_or_truncate(m, self.max_len, pad_value=True, dim=0)  # m: [T]
             states.append(s)
             masks.append(m)
             labels.append(label_id)
@@ -65,13 +62,13 @@ class MetaStyleDataset(Dataset):
             del states, masks, labels
 
         return {
-            'support_pos': torch.stack(support_pos),  # [N*K, T, 112, 8, 8]
-            'support_mask': torch.stack(support_mask),
-            'support_labels': torch.tensor(support_labels),
+            'support_pos': support_pos,  # [N*K, T, 112, 8, 8]
+            'support_mask': support_mask,
+            'support_labels': support_labels,
 
-            'query_pos': torch.stack(query_pos),  # [N*Q, T, 112, 8, 8]
-            'query_mask': torch.stack(query_mask),
-            'query_labels': torch.tensor(query_labels),
+            'query_pos': query_pos,  # [N*Q, T, 112, 8, 8]
+            'query_mask': query_mask,
+            'query_labels': query_labels,
         }
 
 

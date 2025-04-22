@@ -91,7 +91,7 @@ def compute_proto_similarity(prototypes):
 
 
 class EncoderTrainer:
-    def __init__(self, train_loader, val_loader, test_loader=None, max_len=100):
+    def __init__(self, train_loader, val_loader, test_loader=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(self.device)
 
@@ -100,7 +100,7 @@ class EncoderTrainer:
         self.test_loader = test_loader
 
         self.encoder = TransformerEncoder(cnn_in_channels=224, state_embed_dim=256, transformer_d_model=256,
-                                          num_heads=8, num_layers=3, dropout=0.1, max_seq_len=max_len).to(self.device)
+                                          num_heads=8, num_layers=3, dropout=0.1).to(self.device)
         # self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
         model_params = self.encoder.parameters()
         self.optimizer = torch.optim.AdamW(
@@ -119,12 +119,12 @@ class EncoderTrainer:
 
     def unpack_batch(self, batch):
         return (
-            batch['support_pos'].to(self.device),
-            batch['support_mask'].to(self.device),
-            batch['support_labels'].to(self.device),
-            batch['query_pos'].to(self.device),
-            batch['query_mask'].to(self.device),
-            batch['query_labels'].to(self.device)
+            batch['support_pos'],
+            batch['support_mask'],
+            batch['support_labels'],
+            batch['query_pos'],
+            batch['query_mask'],
+            batch['query_labels']
         )
 
     def task_proto_loss_and_acc(self, support_pos, support_mask, support_labels, query_pos, query_mask, query_labels):
@@ -214,6 +214,21 @@ class EncoderTrainer:
 
             print(f"\n🟢 Epoch {epoch + 1}/{epochs} started...")
 
+            for idx in range(len(self.train_loader)):
+                data = self.train_loader.__getitem__(idx)
+                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(data)
+
+                for i in range(len(support_pos)):
+                    support_pos[i] = support_pos[i].to(self.device)
+                    support_mask[i] = support_mask[i].to(self.device)
+                    support_labels[i] = support_labels[i].to(self.device)
+
+                    query_pos[i] = query_pos[i].to(self.device)
+                    query_mask[i] = query_mask[i].to(self.device)
+                    query_labels[i] = query_labels[i].to(self.device)
+
+                    _, support_z = self.encoder(support_pos[i], support_mask[i])
+
             for batch in self.train_loader:
                 batch_count += 1
 
@@ -296,91 +311,46 @@ class EncoderTrainer:
                 param_group['lr'] = 1e-5
             print(f"load model from {model_path}")
 
-    def style_consistency_analysis(self, num_trials=50, support_size=5, save_path="./style_consistency.png"):
-        self.encoder.eval()
-        results = defaultdict(list)
-
-        with torch.no_grad():
-            for trial in range(num_trials):
-                # 从测试集中随机选取一个 batch（包含多个任务，每个任务代表一名玩家的数据）
-                batch = next(iter(self.test_loader))
-                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
-
-                # 针对每个任务（batch 内的每个样本）分别处理
-                for i in range(support_pos.size(0)):
-                    task_support_labels = support_labels[i]  # 形状: (num_support,)
-                    task_query_labels = query_labels[i]       # 形状: (num_query,)
-
-                    for player_id in task_support_labels.unique():
-                        # 从支持集中获取对应玩家的样本索引，至少需要 support_size 个样本
-                        support_indices = (task_support_labels == player_id).nonzero(as_tuple=True)[0].tolist()
-                        if len(support_indices) < support_size:
-                            continue
-                        sampled_support_indices = random.sample(support_indices, support_size)
-
-                        support_p = support_pos[i][sampled_support_indices]  # 形状: (support_size, seq_len, C, H, W)
-                        support_m = support_mask[i][sampled_support_indices]
-
-                        # 构造原型
-                        _, support_z = self.encoder(support_p, support_m)
-                        proto = support_z.mean(dim=0, keepdim=True)  # 形状: (1, D)
-
-                        # 从 query 集中获取该玩家的所有样本索引
-                        query_indices = (task_query_labels == player_id).nonzero(as_tuple=True)[0].tolist()
-                        if not query_indices:
-                            continue
-
-                        query_p = query_pos[i][query_indices]  # 形状: (num_query_samples, seq_len, C, H, W)
-                        query_m = query_mask[i][query_indices]
-                        _, query_z = self.encoder(query_p, query_m)  # 形状: (num_query_samples, D)
-
-                        # 计算每个 query 样本与原型之间的距离
-                        distances = torch.norm(query_z - proto, dim=1)
-                        avg_distance = distances.mean().item()
-                        results[player_id.item()].append(avg_distance)
-
-        # 绘制柱状图：每个玩家所有 trial 的平均距离再次取平均
-        plt.figure(figsize=(10, 5))
-        sorted_ids = sorted(results.keys())
-        avg_dists = [sum(results[k]) / len(results[k]) for k in sorted_ids]
-        plt.bar([f"Player {k}" for k in sorted_ids], avg_dists)
-        plt.ylabel("Avg Distance to Prototype")
-        plt.title(f"Style Consistency Check (Each player: {num_trials} trials, Support size: {support_size})")
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(save_path)
-        print(f"📊 Style consistency chart saved to {save_path}")
-
-
 def load_dataset_file(path):
     with open(f"chess_data_parse/{path}.json", "r", encoding="utf-8") as f:
         return json.load(f)
+    
+class Dataloader:
+    def __init__(self, dataset):
+        self.dataset = dataset
+        pass
+
+    def next(self):
+        data = self.dataset.__getitem__(0)
+
+        return 
 
 
 if __name__ == '__main__':
-    max_len = 100
     num_workers = 4
     batch_size = 4  # or 8 depending on memory
 
-    train_dataset = MetaStyleDataset(load_dataset_file("train_players"), 1000, N=3, max_len=max_len)
+    train_dataset = MetaStyleDataset(load_dataset_file("train_players"), 1000)
 
-    train_loader = DataLoader(train_dataset,
-                              batch_size=batch_size,
-                              shuffle=True,
-                              pin_memory=False,
-                              num_workers=num_workers,
-                              persistent_workers=True
-                              )
+    print(train_dataset[0], train_dataset[1])
 
-    val_dataset = MetaStyleDataset(load_dataset_file("val_players"), 150, N=3, max_len=max_len)
+    # train_loader = DataLoader(train_dataset,
+    #                           batch_size=batch_size,
+    #                           shuffle=True,
+    #                           pin_memory=False,
+    #                           num_workers=num_workers,
+    #                           persistent_workers=True
+    #                           )
 
-    val_loader = DataLoader(val_dataset,
-                            batch_size=batch_size,
-                            shuffle=True,
-                            pin_memory=False,
-                            num_workers=num_workers,
-                            persistent_workers=True
-                            )
+    val_dataset = MetaStyleDataset(load_dataset_file("val_players"), 150)
+
+    # val_loader = DataLoader(val_dataset,
+    #                         batch_size=batch_size,
+    #                         shuffle=True,
+    #                         pin_memory=False,
+    #                         num_workers=num_workers,
+    #                         persistent_workers=True
+    #                         )
 
     # test_dataset = MetaStyleDataset(load_dataset_file("test_players"), 150, max_len=max_len)
 
@@ -392,9 +362,9 @@ if __name__ == '__main__':
     #                         persistent_workers=True
     #                          )
 
-    trainer = EncoderTrainer(train_loader, val_loader, max_len=max_len)
+    trainer = EncoderTrainer(trs, val_loader)
 
-    save_path = "./models/model_2025_04_07_N_5_K_5_Q_5_supconlosss"
+    save_path = "./models/model_2025_04_022_N_5_K_5_Q_5_supconlosss"
     model_idx = 0
     os.makedirs(save_path, exist_ok=True)
 
