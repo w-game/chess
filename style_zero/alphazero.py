@@ -110,25 +110,33 @@ class AlphaZeroTrainer:
 
             step += 1
 
-            if step > 200:
-                return self.self_play_game()
-
-        sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
-        sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
         outcome = game.board.pc_board.outcome()
-        total_sim_a = sim_a
-        total_sim_b = sim_b
+        total_sim_a = 0
+        total_sim_b = 0
         v_win = 0.0
+        sim_a = 0.0
+        sim_b = 0.0
         if outcome is not None:
             winner = outcome.winner
-            if winner:
-                v_win = 0.8
-                total_sim_a = 0.8 + 0.2 * sim_a
-                total_sim_b = 0.8 - 0.2 * sim_b
-            elif not winner:
-                v_win = -0.8
-                total_sim_a = -0.8 + 0.2 * sim_a
-                total_sim_b = -0.8 - 0.2 * sim_b
+            if step < 200:
+                sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
+                sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
+                if winner:
+                    v_win = 0.8
+                    total_sim_a = 0.8 + 0.2 * sim_a
+                    total_sim_b = 0.8 - 0.2 * sim_b
+                elif not winner:
+                    v_win = -0.8
+                    total_sim_a = -0.8 + 0.2 * sim_a
+                    total_sim_b = -0.8 - 0.2 * sim_b
+            else:
+                if winner:
+                    total_sim_a = 1.0
+                    total_sim_b = 1.0
+                elif not winner:
+                    v_win = -1.0
+                    total_sim_a = -1.0
+                    total_sim_b = -1.0
         
         for state, pi, t in zip(states, pis, turns):
             if t:
