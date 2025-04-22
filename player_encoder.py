@@ -202,6 +202,25 @@ class EncoderTrainer:
         avg_score_cosine = total_score_cosine / batch_count
         return avg_loss, accuracy, avg_score_cosine, total_similarity / batch_count
 
+    def build_prototypes_from_support(self, data):
+        prototypes = []
+        labels = []
+        for id, player_data in data.items():
+            support_games = player_data['support']['games']
+            support_masks = player_data['support']['masks']
+
+            prototype_embeddings = []
+            for game, mask in zip(support_games, support_masks):
+                game = game.to(self.device)
+                mask = mask.to(self.device)
+                _, support_z = self.encoder(game, mask)
+                prototype_embeddings.append(support_z)
+
+            prototype = torch.stack(prototype_embeddings, dim=0).mean(dim=0)
+            prototypes.append(prototype)
+            labels.append(torch.tensor(id, device=self.device))
+        return torch.stack(prototypes), torch.stack(labels)
+
     def train(self, epochs=60, save_path="./models", model_idx=0):
         scaler = torch.GradScaler('cuda')
         train_losses = []
@@ -216,19 +235,29 @@ class EncoderTrainer:
 
             for idx in range(len(self.train_loader)):
                 data = self.train_loader.__getitem__(idx)
-
+                with torch.autocast(device_type="cuda"):
+                    prototypes, labels = self.build_prototypes_from_support(data)
+                # 计算概率分布
                 for id, player_data in data.items():
-                    support_games = player_data['support']['games']
-                    support_masks = player_data['support']['masks']
+                    query_games = player_data['query']['games']
+                    query_masks = player_data['query']['masks']
+                    query_zs = []
+                    for game, mask in zip(query_games, query_masks):
+                        game = game.to(self.device)
+                        mask = mask.to(self.device)
+                        _, query_z = self.encoder(game, mask)
+                        query_zs.append(query_z)
+                    query_zs = torch.stack(query_zs, dim=0).mean(dim=0)
 
-                    query_pos = player_data['query']['games']
-                    query_mask = player_data['query']['masks']
+                    # 计算与原型的余弦距离
+                    logits = -torch.cdist(query_zs.unsqueeze(0), prototypes)[0]
+                    target = torch.tensor([id], dtype=torch.long, device=self.device)
+                    loss = F.cross_entropy(logits.unsqueeze(0), target)
 
-                    with torch.autocast(device_type="cuda"):
-                        for game, mask in zip(support_games, support_masks):
-                            game = game.to(self.device)
-                            mask = mask.to(self.device)
-                            supcon_z, support_z = self.encoder(game, mask)
+                    self.optimizer.zero_grad()
+                    scaler.scale(loss).backward()
+                    scaler.step(self.optimizer)
+                    scaler.update()
 
             for batch in self.train_loader:
                 batch_count += 1
