@@ -51,7 +51,6 @@ class MCTS:
         """
         Back up the value of the node to its parent.
         """
-
         while node is not None:
             if node.turn:
                 node.total_value += v + v_w
@@ -65,18 +64,23 @@ class MCTS:
         while True:
             if state.is_game_over():
                 features = state.get_feature_sequence()
-                reward_white = self.reward_fc(features, True) * (self.gamma ** step)
-                reward_black = self.reward_fc(features, False) * (self.gamma ** step)
+                reward_white = self.reward_fc(features, True)
+                reward_black = self.reward_fc(features, False)
 
                 outcome = state.pc_board.outcome()
                 if outcome is not None:
                     winner = outcome.winner    # True 白胜, False 黑胜, None 平局
                     if winner == True:
-                        v_win = 1
+                        v_win = 1 * (self.gamma ** step)
                     elif winner == False:
-                        v_win = -1
+                        v_win = -1 * (self.gamma ** step)
+                    else:
+                        v_win = 0
                 else:
                     v_win = 0
+
+                print(f"[SIM→TERM] winner={'W' if winner else 'B' if winner==False else 'D'} | "
+                    f"v_win={v_win:.3f}, r_white={reward_white:.3f}, r_black={reward_black:.3f}")
 
                 self.backup(node, v_win, reward_white, reward_black)
                 return v_win, reward_white, reward_black
@@ -101,15 +105,15 @@ class MCTS:
                         prior = 0.75 * prior + 0.25 * noise[i]
                     node.children[a_idx] = TreeNode(node, float(prior), not node.turn)
 
-                self.backup(node, v, 0, 0)
+                self.backup(node, v.item(), 0, 0)
     
-                return v, 0, 0
+                return v.item(), 0, 0
 
             best_score, best_action_idx = -float('inf'), None
             for a, child in node.children.items():
                 cpuct_coeff = self._dyn_cpuct(node.visit_count)
                 value = child.value()
-                if not node.turn:
+                if not child.turn:
                     value = -value
                 ucb = value + cpuct_coeff * child.prior * (np.sqrt(node.visit_count) / (child.visit_count + 1))
                 if ucb > best_score:
@@ -127,14 +131,14 @@ class MCTS:
         if root is None:
             root = TreeNode(None, 1.0, True)
         for _ in range(self.num_simulations):
-            v, v_w, v_b = self.simulate(state.copy(), root, step)
+            v, v_w, v_b = self.simulate(state.copy(), root)
 
         visits = {a: child.visit_count for a, child in root.children.items()}
         # return both visits and the updated root so callers can reuse subtree
         return visits, root
 
     def get_action_probabilities(self, state, step, temp=1.0, root=None):
-        visits, root = self.run(state, root)
+        visits, root = self.run(state, root, step)
 
         if temp == 0:
             best_action = max(visits.items(), key=lambda x: x[1])[0]

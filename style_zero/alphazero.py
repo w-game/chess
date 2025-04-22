@@ -73,8 +73,6 @@ class AlphaZeroTrainer:
         step = 0
 
         while not game.is_game_over():
-            step += 1
-
             legal_move = game.generate_legal_moves()
 
             state = game.get_current_state()
@@ -110,36 +108,46 @@ class AlphaZeroTrainer:
             states.append(state.lcz_features())
             pis.append(pi)
 
+            step += 1
+
+            if step > 200:
+                return self.self_play_game()
+
         sim_a = self.reward_fc(game.board.get_feature_sequence(), True)
         sim_b = self.reward_fc(game.board.get_feature_sequence(), False)
         outcome = game.board.pc_board.outcome()
+        total_sim_a = sim_a
+        total_sim_b = sim_b
+        v_win = 0.0
         if outcome is not None:
             winner = outcome.winner
             if winner:
-                sim_a = 0.8 + 0.2 * sim_a
-                sim_b = 0.8 - 0.2 * sim_b
+                v_win = 0.8
+                total_sim_a = 0.8 + 0.2 * sim_a
+                total_sim_b = 0.8 - 0.2 * sim_b
             elif not winner:
-                sim_a = -0.8 + 0.2 * sim_a
-                sim_b = -0.8 - 0.2 * sim_b
+                v_win = -0.8
+                total_sim_a = -0.8 + 0.2 * sim_a
+                total_sim_b = -0.8 - 0.2 * sim_b
         
         for state, pi, t in zip(states, pis, turns):
-                if t:
-                    sim = sim_a
-                else:
-                    sim = sim_b
-                self.memory.append((state, pi, sim, t))
+            if t:
+                sim = total_sim_a
+            else:
+                sim = total_sim_b
+            self.memory.append((state, pi, sim, t))
         
-        return step, sim_a, sim_b
+        return step, sim_a, sim_b, v_win
     
     def self_play(self, idx):
         # play as white
-        step_a, sim_a, sim_b = self.self_play_game()
-        print(f"Player White {idx + 1}/{self.config['num_self_play_games']}: {step_a} Step {sim_a:.4f}, {sim_b:.4f}")
+        step_a, sim_a, sim_b, v_win = self.self_play_game()
+        print(f"Player White {idx + 1}/{self.config['num_self_play_games']}: {step_a} Step {sim_a:.4f}, {sim_b:.4f}, {v_win:.4f}")
         # play as black
         # step_b, sim_a_b, sim_b_b = self.self_play_game(False)
         # print(f"Player Black {idx + 1}/{self.config['num_self_play_games']}: {step_b} Step {sim_a_b:.4f}, {sim_b_b:.4f}")
         # return white results so Trainer.run can unpack
-        return step_a, sim_a, sim_b
+        return step_a, sim_a, sim_b, v_win
 
     def train(self):
         if len(self.memory) < self.config['batch_size']:
@@ -212,8 +220,9 @@ class AlphaZeroTrainer:
         for iteration in range(self.config['num_iterations']):
             print(f"Iteration {iteration + 1}/{self.config['num_iterations']}")
             for idx in range(self.config['num_self_play_games']):
-                step, sim_a, sim_b = self.self_play(idx)
+                step, sim_a, sim_b, v_win = self.self_play(idx)
 
+            for _ in range(5):
                 self.train()
 
             if (iteration + 1) % self.config['save_interval'] == 0:

@@ -100,7 +100,7 @@ if __name__ == "__main__":
         'memory_size': 10000,
         'batch_size': 64,
         'num_iterations': 1000,
-        'num_self_play_games': 25,
+        'num_self_play_games': 4,
         'temperature': 1.0,
         'num_simulations': 20,
         'save_interval': 5
