@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from player_encoder.dataset import MetaStyleDataset
-from player_encoder.encoder import TransformerEncoder
+from player_encoder_infine.dataset import MetaStyleDataset
+from player_encoder_infine.encoder import TransformerEncoder
 
 
 class SupConLoss(nn.Module):
