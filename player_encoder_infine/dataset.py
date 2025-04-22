@@ -36,6 +36,8 @@ class MetaStyleDataset(Dataset):
         support_pos, support_mask, support_labels = [], [], []
         query_pos, query_mask, query_labels = [], [], []
 
+        players_data = {}
+
         for label_id, pid in enumerate(sampled_ids):
             games = self.player_dataset.get_player_data_by_id(pid, self.K + self.Q)
             random.shuffle(games)
@@ -45,31 +47,21 @@ class MetaStyleDataset(Dataset):
             support_games = games[:self.K]
             query_games = games[self.K:self.K + self.Q]
 
-            states, masks, labels = self.set_creator(support_games, label_id)
-            support_pos.extend(states)
-            support_mask.extend(masks)
-            support_labels.extend(labels)
+            support_states, support_masks, labels = self.set_creator(support_games, label_id)
+            query_states, query_masks, labels = self.set_creator(query_games, label_id)
 
-            # 清理不再需要的变量
-            del states, masks, labels
+            players_data[label_id] = {
+                'support' : {
+                    'games': support_states,
+                    'masks': support_masks
+                },
+                'query' : {
+                    'games': query_states,
+                    'masks': query_masks
+                }
+            }
 
-            states, masks, labels = self.set_creator(query_games, label_id)
-            query_pos.extend(states)
-            query_mask.extend(masks)
-            query_labels.extend(labels)
-
-            # 清理不再需要的变量
-            del states, masks, labels
-
-        return {
-            'support_pos': support_pos,  # [N*K, T, 112, 8, 8]
-            'support_mask': support_mask,
-            'support_labels': support_labels,
-
-            'query_pos': query_pos,  # [N*Q, T, 112, 8, 8]
-            'query_mask': query_mask,
-            'query_labels': query_labels,
-        }
+        return players_data
 
 
 def pad_or_truncate(tensor, target_len, pad_value=0, dim=0):

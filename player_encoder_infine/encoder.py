@@ -50,8 +50,8 @@ class PositionalEncoding(nn.Module):
         self.d_model = d_model
 
     def forward(self, x):
-        # x: [batch_size, seq_len, d_model]
-        seq_len = x.size(1)
+        # x: [seq_len, d_model]
+        seq_len = x.size(0)
         device = x.device
 
         position = torch.arange(0, seq_len, dtype=torch.float, device=device).unsqueeze(1)  # [seq_len, 1]
@@ -60,7 +60,6 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
 
-        pe = pe.unsqueeze(0)
         x = x + pe
         return self.dropout(x)  # [batch_size, seq_len, d_model]
     
@@ -103,14 +102,16 @@ class TransformerEncoder(nn.Module):
         返回:
           整局风格向量: [batch, transformer_d_model]
         """
-        batch_size, seq_len, C, H, W = states.size()
+        seq_len, C, H, W = states.size()
 
         # 编码状态
-        states = states.view(batch_size * seq_len, C, H, W)
+        states = states.view(seq_len, C, H, W)
         state_emb = self.state_encoder(states)  # [batch*seq_len, state_embed_dim]
-        state_emb = state_emb.view(batch_size, seq_len, -1)
+        state_emb = state_emb.view(seq_len, -1)
 
         token_embeddings = self.pos_encoder(state_emb)
+        token_embeddings = token_embeddings.unsqueeze(0)  # [batch, seq_len, transformer_d_model]
+        mask = mask.unsqueeze(0) if mask is not None else None  # [batch, 1, seq_len]
 
         # Transformer 编码
         transformer_output = self.transformer_encoder(

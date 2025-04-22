@@ -216,18 +216,19 @@ class EncoderTrainer:
 
             for idx in range(len(self.train_loader)):
                 data = self.train_loader.__getitem__(idx)
-                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(data)
 
-                for i in range(len(support_pos)):
-                    support_pos[i] = support_pos[i].to(self.device)
-                    support_mask[i] = support_mask[i].to(self.device)
-                    support_labels[i] = support_labels[i].to(self.device)
+                for id, player_data in data.items():
+                    support_games = player_data['support']['games']
+                    support_masks = player_data['support']['masks']
 
-                    query_pos[i] = query_pos[i].to(self.device)
-                    query_mask[i] = query_mask[i].to(self.device)
-                    query_labels[i] = query_labels[i].to(self.device)
+                    query_pos = player_data['query']['games']
+                    query_mask = player_data['query']['masks']
 
-                    _, support_z = self.encoder(support_pos[i], support_mask[i])
+                    with torch.autocast(device_type="cuda"):
+                        for game, mask in zip(support_games, support_masks):
+                            game = game.to(self.device)
+                            mask = mask.to(self.device)
+                            supcon_z, support_z = self.encoder(game, mask)
 
             for batch in self.train_loader:
                 batch_count += 1
@@ -332,8 +333,6 @@ if __name__ == '__main__':
 
     train_dataset = MetaStyleDataset(load_dataset_file("train_players"), 1000)
 
-    print(train_dataset[0], train_dataset[1])
-
     # train_loader = DataLoader(train_dataset,
     #                           batch_size=batch_size,
     #                           shuffle=True,
@@ -362,7 +361,7 @@ if __name__ == '__main__':
     #                         persistent_workers=True
     #                          )
 
-    trainer = EncoderTrainer(trs, val_loader)
+    trainer = EncoderTrainer(train_dataset, val_dataset)
 
     save_path = "./models/model_2025_04_022_N_5_K_5_Q_5_supconlosss"
     model_idx = 0
