@@ -93,7 +93,7 @@ class TransformerEncoder(nn.Module):
         self.layernorm = nn.LayerNorm(transformer_d_model)
         self.temperature = 0.07
 
-    def forward(self, states, mask=None):
+    def forward(self, states):
         """
         参数:
           states: [batch, seq_len, 112, 8, 8]，状态序列
@@ -111,26 +111,25 @@ class TransformerEncoder(nn.Module):
 
         token_embeddings = self.pos_encoder(state_emb)
         token_embeddings = token_embeddings.unsqueeze(0)  # [batch, seq_len, transformer_d_model]
-        mask = mask.unsqueeze(0) if mask is not None else None  # [batch, 1, seq_len]
 
         # Transformer 编码
         transformer_output = self.transformer_encoder(
-            token_embeddings, src_key_padding_mask=mask
+            token_embeddings, src_key_padding_mask=None
         )
 
         # 序列池化（聚合）
-        if mask is not None:
-            # False 表示有效位置
-            valid_mask = mask.unsqueeze(-1).float()  # [batch, seq_len, 1]
-            transformer_output = transformer_output * valid_mask
-            valid_counts = valid_mask.sum(dim=1)
-            pooled = transformer_output.sum(dim=1)
+        # if mask is not None:
+        #     # False 表示有效位置
+        #     valid_mask = (~mask).unsqueeze(-1).float()  # [batch, seq_len, 1]
+        #     transformer_output = transformer_output * valid_mask
+        #     valid_counts = valid_mask.sum(dim=1)
+        #     pooled = transformer_output.sum(dim=1)
 
-            # 对于全 padding 的样本，设置为 small vector，避免 pooled=0
-            pooled[valid_counts.squeeze(-1) == 0] = 1e-6
-            pooled = pooled / valid_counts.clamp(min=1)
-        else:
-            pooled = transformer_output.mean(dim=1)
+        #     # 对于全 padding 的样本，设置为 small vector，避免 pooled=0
+        #     pooled[valid_counts.squeeze(-1) == 0] = 1e-6
+        #     pooled = pooled / valid_counts.clamp(min=1)
+        # else:
+        pooled = transformer_output.mean(dim=1)
 
         # 输出风格向量
         final_embedding = self.fc(pooled)

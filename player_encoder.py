@@ -101,7 +101,6 @@ class EncoderTrainer:
 
         self.encoder = TransformerEncoder(cnn_in_channels=224, state_embed_dim=256, transformer_d_model=256,
                                           num_heads=8, num_layers=3, dropout=0.1).to(self.device)
-        # self.optimizer = torch.optim.Adam(self.encoder.parameters(), lr=1e-4)
         model_params = self.encoder.parameters()
         self.optimizer = torch.optim.AdamW(
             model_params,
@@ -116,91 +115,53 @@ class EncoderTrainer:
         #     momentum=0.9,
         #     weight_decay=1e-4
         # )
-
-    def unpack_batch(self, batch):
-        return (
-            batch['support_pos'],
-            batch['support_mask'],
-            batch['support_labels'],
-            batch['query_pos'],
-            batch['query_mask'],
-            batch['query_labels']
-        )
-
-    def task_proto_loss_and_acc(self, support_pos, support_mask, support_labels, query_pos, query_mask, query_labels):
-        B = support_pos.shape[0]
+        
+    @torch.no_grad()
+    def val(self):
+        self.encoder.eval()
         total_loss = 0
         total_correct = 0
         total_total = 0
         total_score_cosine = 0
         total_similarity = 0
 
-        for i in range(B):
-            _, support_z = self.encoder(support_pos[i], support_mask[i])
-
-            N = support_labels[i].max().item() + 1
-            D = support_z.shape[-1]
-            # Initialize tensors for summing embeddings and counting occurrences per class
-            prototypes_sum = torch.zeros(N, D, device=support_z.device)
-            counts = torch.zeros(N, device=support_z.device)
-            
-            # Compute the sum of embeddings for each class in a vectorized manner
-            prototypes_sum = prototypes_sum.scatter_add(0, support_labels[i].unsqueeze(1).expand(-1, D), support_z)
-            # Count the number of samples for each class
-            counts = counts.scatter_add(0, support_labels[i], torch.ones_like(support_labels[i], dtype=torch.float))
-            
-            # Compute the mean (prototype) for each class
-            prototypes = prototypes_sum / counts.unsqueeze(1)
-
-            contrastive_z, query_z = self.encoder(query_pos[i], query_mask[i])
-
-            supcon_loss = self.supcon_loss(contrastive_z, query_labels[i])
-            logits = -torch.cdist(query_z, prototypes)
-            loss = F.cross_entropy(logits, query_labels[i])
-            pred = torch.argmax(logits, dim=1)
-            correct = (pred == query_labels[i]).sum().item()
-
-            total_loss += loss + 0.1 * supcon_loss
-            total_correct += correct
-            total_total += query_labels[i].size(0)
-            total_similarity += compute_proto_similarity(prototypes)
-
-            similarity_percent, avg_similarity_cosine = compute_similarity_percent_cosine(query_z, prototypes, query_labels[i])
-            total_score_cosine += avg_similarity_cosine
-
-            del support_z, query_z, logits, prototypes
-            torch.cuda.empty_cache()
-
-        return total_loss / B, total_correct, total_total, total_score_cosine / B, total_similarity / B
-
-    @torch.no_grad()
-    def val(self):
-        total_loss = 0
-        total_correct = 0
-        total_samples = 0
-        batch_count = 0
-        total_score_cosine = 0
-        total_similarity = 0
-        for batch in self.val_loader:
-            batch_count += 1
-
-            support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(batch)
+        for idx in range(len(self.val_loader)):
+            data = self.val_loader.__getitem__(idx)
             with torch.autocast(device_type="cuda"):
-                loss, correct, total, score_cosin, similarity = self.task_proto_loss_and_acc(
-                    support_pos, support_mask, support_labels,
-                    query_pos, query_mask, query_labels
-                )
+                prototypes, labels = self.build_prototypes_from_support(data)
+                all_query_zs = []
+                all_targets = []
 
-            total_loss += loss.item()
-            total_correct += correct
-            total_samples += total
-            total_score_cosine += score_cosin
-            total_similarity += similarity
+                for id, player_data in data.items():
+                    query_games = player_data['query']['games']
+                    query_masks = player_data['query']['masks']
+                    for game, mask in zip(query_games, query_masks):
+                        game = game.to(self.device)
+                        mask = mask.to(self.device)
+                        _, query_z = self.encoder(game)
+                        all_query_zs.append(query_z.squeeze(0))
+                        all_targets.append(id)
+                query_zs = torch.stack(all_query_zs, dim=0)
+                targets = torch.tensor(all_targets, dtype=torch.long, device=self.device)
+                logits = -torch.cdist(query_zs, prototypes).to(torch.float32)
+                loss = F.cross_entropy(logits, targets)
+                pred = torch.argmax(logits, dim=1)
+                correct = (pred == targets).sum().item()
+                total_loss += loss.item()
+                total_correct += correct
+                total_total += targets.size(0)
+                total_similarity += compute_proto_similarity(prototypes)
+                similarity_percent, avg_similarity_cosine = compute_similarity_percent_cosine(query_zs, prototypes, targets)
+                total_score_cosine += avg_similarity_cosine
+                del query_zs, logits, prototypes
+                torch.cuda.empty_cache()
+        avg_loss = total_loss / len(self.val_loader)
+        avg_acc = total_correct / total_total
+        avg_score_cosine = total_score_cosine / len(self.val_loader)
+        avg_similarity = total_similarity / len(self.val_loader)
+        print(f"🔴 [Validation] Loss: {avg_loss:.4f}, Acc: {avg_acc:.4f}, Cosine Similarity: {avg_score_cosine:.4f}, Prototype Similarity: {avg_similarity:.4f}")
 
-        avg_loss = total_loss / batch_count
-        accuracy = total_correct / total_samples
-        avg_score_cosine = total_score_cosine / batch_count
-        return avg_loss, accuracy, avg_score_cosine, total_similarity / batch_count
+        return avg_loss
 
     def build_prototypes_from_support(self, data):
         prototypes = []
@@ -213,109 +174,72 @@ class EncoderTrainer:
             for game, mask in zip(support_games, support_masks):
                 game = game.to(self.device)
                 mask = mask.to(self.device)
-                _, support_z = self.encoder(game, mask)
+                _, support_z = self.encoder(game)
+                support_z = support_z.squeeze(0)  # [1, d] -> [d]
                 prototype_embeddings.append(support_z)
 
             prototype = torch.stack(prototype_embeddings, dim=0).mean(dim=0)
             prototypes.append(prototype)
             labels.append(torch.tensor(id, device=self.device))
         return torch.stack(prototypes), torch.stack(labels)
+    
+    def train_one_epoch(self, epoch, dataloader, scaler):
+        total_loss = 0
+        batch_count = 0
 
-    def train(self, epochs=60, save_path="./models", model_idx=0):
-        scaler = torch.GradScaler('cuda')
-        train_losses = []
-        val_losses = []
+        loss_ce = 0
+        loss_supcon = 0
+        for idx in range(len(dataloader)):
+            data = dataloader.__getitem__(idx)
+            with torch.autocast(device_type="cuda"):
+                prototypes, _ = self.build_prototypes_from_support(data)
 
-        for epoch in range(epochs):
-            self.encoder.train()
-            total_loss = 0
-            batch_count = 0
+                all_query_zs = []
+                all_contrastive_zs = []
+                all_targets = []
 
-            print(f"\n🟢 Epoch {epoch + 1}/{epochs} started...")
-
-            for idx in range(len(self.train_loader)):
-                data = self.train_loader.__getitem__(idx)
-                with torch.autocast(device_type="cuda"):
-                    prototypes, labels = self.build_prototypes_from_support(data)
-                # 计算概率分布
                 for id, player_data in data.items():
                     query_games = player_data['query']['games']
                     query_masks = player_data['query']['masks']
-                    query_zs = []
                     for game, mask in zip(query_games, query_masks):
                         game = game.to(self.device)
                         mask = mask.to(self.device)
-                        _, query_z = self.encoder(game, mask)
-                        query_zs.append(query_z)
-                    query_zs = torch.stack(query_zs, dim=0).mean(dim=0)
+                        contrastive_z, query_z = self.encoder(game)
+                        all_query_zs.append(query_z.squeeze(0))  # [d]
+                        all_contrastive_zs.append(contrastive_z.squeeze(0))
+                        all_targets.append(id)
 
-                    # 计算与原型的余弦距离
-                    logits = -torch.cdist(query_zs.unsqueeze(0), prototypes)[0]
-                    target = torch.tensor([id], dtype=torch.long, device=self.device)
-                    loss = F.cross_entropy(logits.unsqueeze(0), target)
+                query_zs = torch.stack(all_query_zs, dim=0)  # [Q_total, d]
+                contrastive_zs = torch.stack(all_contrastive_zs, dim=0)
+                targets = torch.tensor(all_targets, dtype=torch.long, device=self.device)  # [Q_total]
 
+                logits = -torch.cdist(query_zs, prototypes).to(torch.float32)  # [Q_total, N]
+                loss_ce += F.cross_entropy(logits, targets)
+                loss_supcon += self.supcon_loss(F.normalize(contrastive_zs, dim=-1), targets)
+
+                if (idx + 1) % 4 == 0:
+                    loss_ce /= 4
+                    loss_supcon /= 4
+                    mean_loss = loss_ce + loss_supcon * 0.1
                     self.optimizer.zero_grad()
-                    scaler.scale(loss).backward()
+                    scaler.scale(mean_loss).backward()
                     scaler.step(self.optimizer)
                     scaler.update()
 
-            for batch in self.train_loader:
-                batch_count += 1
+                    print(f"🔵 [Player {idx + 1}] Loss: {mean_loss.item():.4f} | CE: {loss_ce:.4f} | SupCon: {loss_supcon:.4f}")
 
-                support_pos, support_mask, support_labels, query_pos, query_mask, query_labels = self.unpack_batch(
-                    batch)
-                with torch.autocast(device_type="cuda"):
-                    loss, _, _, _, _ = self.task_proto_loss_and_acc(
-                        support_pos, support_mask, support_labels,
-                        query_pos, query_mask, query_labels
-                    )
+                    total_loss += mean_loss.item()
+                    batch_count += 1
+                    loss_ce = 0
+                    loss_supcon = 0
 
-                if torch.isnan(loss):
-                    print("❌ Loss is NaN!")
-                    print("support_labels:", support_labels.tolist())
-                    print("query_labels:", query_labels.tolist())
-                    exit()
+        
+        avg_loss = total_loss / batch_count
+        print(f"🔵 [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}")
 
-                self.optimizer.zero_grad()
-                scaler.scale(loss).backward()
-                scaler.step(self.optimizer)
-                scaler.update()
-
-                total_loss += loss.detach().item()
-                if (batch_count + 1) % 20 == 0:
-                    print(f"  ├─ Batch {batch_count} Loss: {loss.item():.4f}")
-
-                del support_pos, support_mask, support_labels
-                del query_pos, query_mask, query_labels
-                del batch, loss
-                torch.cuda.empty_cache()
-
-            avg_loss = total_loss / batch_count
-            avg_val_loss, val_acc, val_score_cosin, val_similarity = self.val()
-
-            train_losses.append(avg_loss)
-            val_losses.append(avg_val_loss)
-
-            print(f"✅ [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}, Avg Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, Val Cosine Score: {val_score_cosin:.4f}, Val Similarity: {val_similarity:.4f}")
-
-            if (epoch + 1) % 2 == 0:
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': self.encoder.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                    'avg_loss': avg_loss,
-                    'avg_val_loss': avg_val_loss
-                }, f"{save_path}/player_encoder_{epoch + 1 + model_idx}.pt")
-                print(f"📦 Model saved to {save_path}")
-
-            # if (epoch + 1) % 10 == 0:
-            #     trainer.style_consistency_analysis(
-            #         num_trials=50,
-            #         support_size=5,
-            #         save_path="./style_consistency.png"
-            #     )
-
-        # 绘制 loss 曲线图
+        return avg_loss
+    
+    def plot_loss_curve(self, train_losses, val_losses, save_path):
         train_losses_cpu = [x.cpu().item() if isinstance(x, torch.Tensor) else x for x in train_losses]
         val_losses_cpu = [x.cpu().item() if isinstance(x, torch.Tensor) else x for x in val_losses]
 
@@ -331,6 +255,34 @@ class EncoderTrainer:
         plt.savefig(f"{save_path}/loss_curve.png")
         print(f"📉 Loss curve saved to {save_path}/loss_curve.png")
 
+    def train(self, epochs=60, save_path="./models", model_idx=0):
+        scaler = torch.GradScaler('cuda')
+        train_losses = []
+        val_losses = []
+
+        for epoch in range(epochs):
+            self.encoder.train()
+
+            print(f"\n🟢 Epoch {epoch + 1}/{epochs} started...")
+
+            avg_loss = self.train_one_epoch(epoch, self.train_loader, scaler)
+            avg_val_loss = self.val()
+            
+            train_losses.append(avg_loss)
+            val_losses.append(avg_val_loss)
+
+            if (epoch + 1) % 2 == 0:
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': self.encoder.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'avg_loss': avg_loss,
+                    'avg_val_loss': avg_val_loss
+                }, f"{save_path}/player_encoder_{epoch + 1 + model_idx}.pt")
+                print(f"📦 Model saved to {save_path}")
+
+            self.plot_loss_curve(train_losses, val_losses, save_path)
+
     def load_model(self, model_path):
         if os.path.exists(model_path):
             d = torch.load(model_path, weights_only=True)
@@ -345,50 +297,9 @@ def load_dataset_file(path):
     with open(f"chess_data_parse/{path}.json", "r", encoding="utf-8") as f:
         return json.load(f)
     
-class Dataloader:
-    def __init__(self, dataset):
-        self.dataset = dataset
-        pass
-
-    def next(self):
-        data = self.dataset.__getitem__(0)
-
-        return 
-
-
 if __name__ == '__main__':
-    num_workers = 4
-    batch_size = 4  # or 8 depending on memory
-
     train_dataset = MetaStyleDataset(load_dataset_file("train_players"), 1000)
-
-    # train_loader = DataLoader(train_dataset,
-    #                           batch_size=batch_size,
-    #                           shuffle=True,
-    #                           pin_memory=False,
-    #                           num_workers=num_workers,
-    #                           persistent_workers=True
-    #                           )
-
     val_dataset = MetaStyleDataset(load_dataset_file("val_players"), 150)
-
-    # val_loader = DataLoader(val_dataset,
-    #                         batch_size=batch_size,
-    #                         shuffle=True,
-    #                         pin_memory=False,
-    #                         num_workers=num_workers,
-    #                         persistent_workers=True
-    #                         )
-
-    # test_dataset = MetaStyleDataset(load_dataset_file("test_players"), 150, max_len=max_len)
-
-    # test_loader = DataLoader(test_dataset,
-    #                         batch_size=batch_size,
-    #                         shuffle=True,
-    #                         pin_memory=False,
-    #                         num_workers=num_workers,s
-    #                         persistent_workers=True
-    #                          )
 
     trainer = EncoderTrainer(train_dataset, val_dataset)
 
