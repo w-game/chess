@@ -28,12 +28,13 @@ def pad_or_truncate(tensor, target_len, pad_value=0, dim=0):
     
 
 class MetaStyleDataset(Dataset):
-    def __init__(self, player_files, data_len, N=5, K=5, Q=5):
+    def __init__(self, player_files, data_len, rand=True, N=5, K=5, Q=5):
         self.player_dataset = PlayerDataset(player_files)
         self.data_len = data_len
         self.N = N
         self.K = K
         self.Q = Q
+        self.rand = rand
 
     def __len__(self):
         return self.data_len
@@ -47,7 +48,10 @@ class MetaStyleDataset(Dataset):
         return games, masks, labels
 
     def __getitem__(self, index):
-        sampled_ids = random.sample(self.player_dataset.player_ids, self.N)
+        if self.rand:
+            sampled_ids = random.sample(self.player_dataset.player_ids, self.N)
+        else:
+            sampled_ids = self.player_dataset.player_ids[index * self.N: (index + 1) * self.N]
 
         all_support_games = []
         all_support_masks = []
@@ -74,11 +78,6 @@ class MetaStyleDataset(Dataset):
             all_query_games.extend(query_games)
             all_query_masks.extend(query_masks)
             all_query_labels.extend(labels)
-        
-        # padded_support_games = pad_sequence(all_support_games, batch_first=True, padding_value=0)
-        # padded_support_masks = pad_sequence(all_support_masks, batch_first=True, padding_value=True)
-        # padded_query_games = pad_sequence(all_query_games, batch_first=True, padding_value=0)
-        # padded_query_masks = pad_sequence(all_query_masks, batch_first=True, padding_value=True)
         
         return {
             'support': {
