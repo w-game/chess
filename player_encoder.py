@@ -207,9 +207,10 @@ class EncoderTrainer:
             for idx, batch in enumerate(dataloader):
                 prototypes, contrastive_z = self.build_prototypes_from_support(batch)
 
-                B, N_K, D = contrastive_z.size()  # [B, N * K, D]
-                supcon_labels = torch.arange(B, device=self.device).repeat_interleave(N_K)  # [B * N * K]
-                sup_loss = self.supcon_loss(contrastive_z.view(B * N_K, D), supcon_labels)
+                B, N_K, D = contrastive_z.size()
+                # contrastive_z = contrastive_z.view(B, N, K, D)
+                supcon_labels = torch.arange(N * B, device=self.device).repeat_interleave(K)
+                sup_loss = self.supcon_loss(contrastive_z.view(B * N * K, D), supcon_labels)
 
                 query_games = batch['query']['games'].to(self.device)  # [B, N * Q, T, C, H, W]
                 query_masks = batch['query']['masks'].to(self.device)  # [B, N * Q, T]
@@ -228,7 +229,7 @@ class EncoderTrainer:
                 targets = targets.unsqueeze(0).repeat(B, 1).view(-1)
 
                 loss_ce = F.cross_entropy(logits, targets)
-                loss = loss_ce + sup_loss * 0.1
+                loss = loss_ce + sup_loss * 0.02
 
                 self.optimizer.zero_grad()
                 scaler.scale(loss).backward()
