@@ -115,130 +115,136 @@ class EncoderTrainer:
         #     momentum=0.9,
         #     weight_decay=1e-4
         # )
-        
+            
     @torch.no_grad()
     def val(self):
         self.encoder.eval()
-        total_loss = 0
+        total_loss = 0.0
         total_correct = 0
-        total_total = 0
-        total_score_cosine = 0
-        total_similarity = 0
+        total_samples = 0
+        total_score_cosine = 0.0
+        total_proto_sim = 0.0
 
-        for idx in range(len(self.val_loader)):
-            data = self.val_loader.__getitem__(idx)
-            with torch.autocast(device_type="cuda"):
-                prototypes, labels = self.build_prototypes_from_support(data)
-                all_query_zs = []
-                all_targets = []
+        with torch.autocast(device_type="cuda"):
+            for batch in self.val_loader:
+                # 1) Move to device
+                query_games   = batch['query']['games'].to(self.device)    # [B, N*Q, T, C, H, W]
+                query_masks   = batch['query']['masks'].to(self.device)    # [B, N*Q, T]
 
-                for id, player_data in data.items():
-                    query_games = player_data['query']['games']
-                    query_masks = player_data['query']['masks']
-                    for game, mask in zip(query_games, query_masks):
-                        game = game.to(self.device)
-                        mask = mask.to(self.device)
-                        _, query_z = self.encoder(game)
-                        all_query_zs.append(query_z.squeeze(0))
-                        all_targets.append(id)
-                query_zs = torch.stack(all_query_zs, dim=0)
-                targets = torch.tensor(all_targets, dtype=torch.long, device=self.device)
-                logits = -torch.cdist(query_zs, prototypes).to(torch.float32)
+                # 2) Build prototypes from support set
+                prototypes, _ = self.build_prototypes_from_support(batch)   # prototypes: [B, N, D]
+                # 3) Encode queries
+                _, query_z = self.encoder(query_games, query_masks)        # query_z: [B, N*Q, D]
+
+                B, N, D = prototypes.shape
+                Q = query_z.size(1) // N  # 动态计算每类 query 数量
+
+                # 4) 计算 logits: [B, N*Q, N] → [B*N*Q, N]
+                logits = F.cosine_similarity(
+                    query_z.unsqueeze(2),        # [B, N*Q, 1, D]
+                    prototypes.unsqueeze(1),     # [B, 1, N, D]
+                    dim=-1
+                ).view(-1, N)
+
+                # 5) 构造 targets: [0,0…0,1,1…1,…,N-1×Q] 重复 B 次 → [B*N*Q]
+                labels = torch.arange(N, device=self.device).repeat_interleave(Q)
+                targets = labels.unsqueeze(0).expand(B, -1).reshape(-1)
+
+                # 6) 计算 CE loss 和 accuracy
                 loss = F.cross_entropy(logits, targets)
-                pred = torch.argmax(logits, dim=1)
-                correct = (pred == targets).sum().item()
-                total_loss += loss.item()
-                total_correct += correct
-                total_total += targets.size(0)
-                total_similarity += compute_proto_similarity(prototypes)
-                similarity_percent, avg_similarity_cosine = compute_similarity_percent_cosine(query_zs, prototypes, targets)
-                total_score_cosine += avg_similarity_cosine
-                del query_zs, logits, prototypes
-                torch.cuda.empty_cache()
-        avg_loss = total_loss / len(self.val_loader)
-        avg_acc = total_correct / total_total
-        avg_score_cosine = total_score_cosine / len(self.val_loader)
-        avg_similarity = total_similarity / len(self.val_loader)
-        print(f"🔴 [Validation] Loss: {avg_loss:.4f}, Acc: {avg_acc:.4f}, Cosine Similarity: {avg_score_cosine:.4f}, Prototype Similarity: {avg_similarity:.4f}")
+                preds = logits.argmax(dim=1)
+                correct = (preds == targets).sum().item()
 
+                total_loss   += loss.item()
+                total_correct+= correct
+                total_samples+= targets.numel()
+
+                # 7) 计算“风格相似度”指标（Cosine %）
+                #    flatten 后 batch*K*Q 样本
+                proto_rep = prototypes.unsqueeze(1).repeat(1, Q, 1, 1) \
+                                                .view(-1, D)  # [B*N*Q, D]
+                query_rep = query_z.view(-1, D)                  # [B*N*Q, D]
+                _, avg_cos = compute_similarity_percent_cosine(query_rep, proto_rep, targets)
+                total_score_cosine += avg_cos
+
+                # 8) 计算 prototype 之间的平均余弦相似度
+                #    对每个样本（batch 中的每个 N 组原型）都算一次，再求和
+                for b in range(B):
+                    total_proto_sim += compute_proto_similarity(prototypes[b])
+
+        num_batches = len(self.val_loader)
+        avg_loss = total_loss   / num_batches
+        avg_acc  = total_correct/ total_samples
+        avg_score_cosine = total_score_cosine / num_batches
+        # 平均到每个“样本组”（batch×N）
+        avg_proto_sim = total_proto_sim / (num_batches * B)
+
+        print(
+            f"🔴 [Validation] "
+            f"Loss: {avg_loss:.4f}, "
+            f"Acc: {avg_acc:.4f}, "
+            f"Cosine Similarity: {avg_score_cosine:.2f}%, "
+            f"Prototype Similarity: {avg_proto_sim:.4f}"
+        )
         return avg_loss
 
-    def build_prototypes_from_support(self, data):
+    def build_prototypes_from_support(self, batch):
         prototypes = []
-        labels = []
-        for id, player_data in data.items():
-            support_games = player_data['support']['games']
-            support_masks = player_data['support']['masks']
+        support_games = batch['support']['games'].to(self.device) # [B, N * K, T, C, H, W]
+        support_masks = batch['support']['masks'].to(self.device) # [B, N * K, T]
 
-            prototype_embeddings = []
-            for game, mask in zip(support_games, support_masks):
-                game = game.to(self.device)
-                mask = mask.to(self.device)
-                _, support_z = self.encoder(game)
-                support_z = support_z.squeeze(0)  # [1, d] -> [d]
-                prototype_embeddings.append(support_z)
+        contrastive_z, support_z = self.encoder(support_games, support_masks) # [B, N * K, d]
 
-            prototype = torch.stack(prototype_embeddings, dim=0).mean(dim=0)
-            prototypes.append(prototype)
-            labels.append(torch.tensor(id, device=self.device))
-        return torch.stack(prototypes), torch.stack(labels)
+        support_z = support_z.view(support_z.size(0), N, K, -1)  # [B, N, K, d]
+        prototypes = support_z.mean(dim=2)  # [B, N, d]
+        return prototypes, contrastive_z
     
     def train_one_epoch(self, epoch, dataloader, scaler):
         total_loss = 0
         batch_count = 0
 
-        loss_ce = 0
-        loss_supcon = 0
-        for idx in range(len(dataloader)):
-            data = dataloader.__getitem__(idx)
-            with torch.autocast(device_type="cuda"):
-                prototypes, _ = self.build_prototypes_from_support(data)
+        with torch.autocast(device_type="cuda"):
+            for idx, batch in enumerate(dataloader):
+                prototypes, contrastive_z = self.build_prototypes_from_support(batch)
 
-                all_query_zs = []
-                all_contrastive_zs = []
-                all_targets = []
+                B, N_K, D = contrastive_z.size()  # [B, N * K, D]
+                supcon_labels = torch.arange(B, device=self.device).repeat_interleave(N_K)  # [B * N * K]
+                sup_loss = self.supcon_loss(contrastive_z.view(B * N_K, D), supcon_labels)
 
-                for id, player_data in data.items():
-                    query_games = player_data['query']['games']
-                    query_masks = player_data['query']['masks']
-                    for game, mask in zip(query_games, query_masks):
-                        game = game.to(self.device)
-                        mask = mask.to(self.device)
-                        contrastive_z, query_z = self.encoder(game)
-                        all_query_zs.append(query_z.squeeze(0))  # [d]
-                        all_contrastive_zs.append(contrastive_z.squeeze(0))
-                        all_targets.append(id)
+                query_games = batch['query']['games'].to(self.device)  # [B, N * Q, T, C, H, W]
+                query_masks = batch['query']['masks'].to(self.device)  # [B, N * Q, T]
 
-                query_zs = torch.stack(all_query_zs, dim=0)  # [Q_total, d]
-                contrastive_zs = torch.stack(all_contrastive_zs, dim=0)
-                targets = torch.tensor(all_targets, dtype=torch.long, device=self.device)  # [Q_total]
+                contrastive_z, query_z = self.encoder(query_games, query_masks)  # [B, N * Q, d]
 
-                logits = -torch.cdist(query_zs, prototypes).to(torch.float32)  # [Q_total, N]
-                loss_ce += F.cross_entropy(logits, targets)
-                loss_supcon += self.supcon_loss(F.normalize(contrastive_zs, dim=-1), targets)
+                prototypes = F.normalize(prototypes, dim=-1)  # [B, N, d]
+                query_z = F.normalize(query_z, dim=-1)  # [B, N * Q, d]
 
-                if (idx + 1) % 4 == 0:
-                    loss_ce /= 4
-                    loss_supcon /= 4
-                    mean_loss = loss_ce + loss_supcon * 0.1
-                    self.optimizer.zero_grad()
-                    scaler.scale(mean_loss).backward()
-                    scaler.step(self.optimizer)
-                    scaler.update()
+                prototypes = prototypes.unsqueeze(1)         # [B, 1, N, D]
+                query_z_flat = query_z.unsqueeze(2)          # [B, N*Q, 1, D]
+                logits = F.cosine_similarity(query_z_flat, prototypes, dim=-1) / 0.05  # [B, N*Q, N]
+                logits = logits.view(-1, N)  # [B * N * Q, N]
 
-                    print(f"🔵 [Player {idx + 1}] Loss: {mean_loss.item():.4f} | CE: {loss_ce:.4f} | SupCon: {loss_supcon:.4f}")
+                targets = torch.arange(N, device=self.device, dtype=torch.long).repeat_interleave(Q)
+                targets = targets.unsqueeze(0).repeat(B, 1).view(-1)
 
-                    total_loss += mean_loss.item()
-                    batch_count += 1
-                    loss_ce = 0
-                    loss_supcon = 0
+                loss_ce = F.cross_entropy(logits, targets)
+                loss = loss_ce + sup_loss * 0.1
 
-        
+                self.optimizer.zero_grad()
+                scaler.scale(loss).backward()
+                scaler.step(self.optimizer)
+                scaler.update()
+
+                print(f"🔵 [Batch {idx + 1}/{len(dataloader)}] Loss: {loss.item():.4f} | CE: {loss_ce:.4f} | SupCon: {sup_loss.item():.4f}")
+
+                total_loss += loss.item()
+                batch_count += 1
+
         avg_loss = total_loss / batch_count
         print(f"🔵 [Epoch {epoch + 1}] Avg Loss: {avg_loss:.4f}")
 
         return avg_loss
-    
+        
     def plot_loss_curve(self, train_losses, val_losses, save_path):
         train_losses_cpu = [x.cpu().item() if isinstance(x, torch.Tensor) else x for x in train_losses]
         val_losses_cpu = [x.cpu().item() if isinstance(x, torch.Tensor) else x for x in val_losses]
@@ -266,10 +272,10 @@ class EncoderTrainer:
             print(f"\n🟢 Epoch {epoch + 1}/{epochs} started...")
 
             avg_loss = self.train_one_epoch(epoch, self.train_loader, scaler)
-            avg_val_loss = self.val()
+            # avg_val_loss = self.val()
             
             train_losses.append(avg_loss)
-            val_losses.append(avg_val_loss)
+            # val_losses.append(avg_val_loss)
 
             if (epoch + 1) % 2 == 0:
                 torch.save({
@@ -277,11 +283,11 @@ class EncoderTrainer:
                     'model_state_dict': self.encoder.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'avg_loss': avg_loss,
-                    'avg_val_loss': avg_val_loss
+                    # 'avg_val_loss': avg_val_loss
                 }, f"{save_path}/player_encoder_{epoch + 1 + model_idx}.pt")
                 print(f"📦 Model saved to {save_path}")
 
-            self.plot_loss_curve(train_losses, val_losses, save_path)
+            # self.plot_loss_curve(train_losses, val_losses, save_path)
 
     def load_model(self, model_path):
         if os.path.exists(model_path):
@@ -296,14 +302,56 @@ class EncoderTrainer:
 def load_dataset_file(path):
     with open(f"chess_data_parse/{path}.json", "r", encoding="utf-8") as f:
         return json.load(f)
+
+from torch.nn.utils.rnn import pad_sequence
+def collate_fn(batch):
+    # 这里的 batch 是一个列表，包含了多个样本
+    # 你可以根据需要进行处理，比如将它们拼接成一个大的 tensor
+
+    splits = ('support', 'query')
+    batched = {}
+
+    batch_size = len(batch)
+
+    for split in splits:
+        # 收集这一 split 下所有样本的 game/mask
+        all_games = []
+        all_masks = []
+        for sample in batch:
+            all_games.extend(sample[split]['games']) # [N, T, C, H, W]
+            all_masks.extend(sample[split]['masks'])
+
+        # 对所有序列进行统一 padding
+        # padded_games: [batch_size*K_or_Q, T_max, ...]
+        padded_games = pad_sequence(all_games, batch_first=True)
+        # padded_masks: [batch_size*K_or_Q, T_max]
+        padded_masks = pad_sequence(all_masks, batch_first=True, padding_value=True)
+
+        # [batch_size, K_or_Q, T_max, ...]
+        padded_games = padded_games.view(batch_size, padded_games.size(0) // batch_size, *padded_games.size()[1:])
+        # [batch_size, K_or_Q, T_max]   
+        padded_masks = padded_masks.view(batch_size, padded_masks.size(0) // batch_size, *padded_masks.size()[1:])
+
+        # 将拼接好的 tensor 放入 batched 字典中
+        batched[split] = {
+            'games': padded_games,
+            'masks': padded_masks,
+            'len': padded_games.size(1)  # K_or_Q
+        }
+
+    return batched
     
 if __name__ == '__main__':
+    N, K, Q = 5, 5, 5
     train_dataset = MetaStyleDataset(load_dataset_file("train_players"), 1000)
     val_dataset = MetaStyleDataset(load_dataset_file("val_players"), 150)
 
-    trainer = EncoderTrainer(train_dataset, val_dataset)
+    data_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=4, collate_fn=collate_fn)
+    val_data_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=4, collate_fn=collate_fn)
 
-    save_path = "./models/model_2025_04_022_N_5_K_5_Q_5_supconlosss"
+    trainer = EncoderTrainer(data_loader, val_data_loader)
+
+    save_path = "./models/model_2025_04_024_N_5_K_5_Q_5_supconlosss"
     model_idx = 0
     os.makedirs(save_path, exist_ok=True)
 

@@ -9,60 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import torch
 from torch.utils.data import Dataset
 
-
-class MetaStyleDataset(Dataset):
-    def __init__(self, player_files, data_len, N=5, K=5, Q=5):
-        self.player_dataset = PlayerDataset(player_files)
-        self.data_len = data_len
-        self.N = N
-        self.K = K
-        self.Q = Q
-
-    def __len__(self):
-        return self.data_len
-
-    def set_creator(self, sub_games, label_id):
-        states, masks, labels = [], [], []
-        for (s, m, _) in sub_games:
-            states.append(s)
-            masks.append(m)
-            labels.append(label_id)
-
-        return states, masks, labels
-
-    def __getitem__(self, index):
-        sampled_ids = random.sample(self.player_dataset.player_ids, self.N)
-
-        support_pos, support_mask, support_labels = [], [], []
-        query_pos, query_mask, query_labels = [], [], []
-
-        players_data = {}
-
-        for label_id, pid in enumerate(sampled_ids):
-            games = self.player_dataset.get_player_data_by_id(pid, self.K + self.Q)
-            random.shuffle(games)
-
-            assert len(games) >= self.K + self.Q, f"玩家 {pid} 样本不够"
-
-            support_games = games[:self.K]
-            query_games = games[self.K:self.K + self.Q]
-
-            support_states, support_masks, labels = self.set_creator(support_games, label_id)
-            query_states, query_masks, labels = self.set_creator(query_games, label_id)
-
-            players_data[label_id] = {
-                'support' : {
-                    'games': support_states,
-                    'masks': support_masks
-                },
-                'query' : {
-                    'games': query_states,
-                    'masks': query_masks
-                }
-            }
-
-        return players_data
-
+from torch.nn.utils.rnn import pad_sequence
 
 def pad_or_truncate(tensor, target_len, pad_value=0, dim=0):
     """
@@ -78,6 +25,75 @@ def pad_or_truncate(tensor, target_len, pad_value=0, dim=0):
         pad_size[dim] = target_len - T
         pad_tensor = torch.full(pad_size, pad_value, dtype=tensor.dtype, device=tensor.device)
         return torch.cat([tensor, pad_tensor], dim=dim)
+    
+
+class MetaStyleDataset(Dataset):
+    def __init__(self, player_files, data_len, N=5, K=5, Q=5):
+        self.player_dataset = PlayerDataset(player_files)
+        self.data_len = data_len
+        self.N = N
+        self.K = K
+        self.Q = Q
+
+    def __len__(self):
+        return self.data_len
+
+    def set_creator(self, sub_games, label_id):
+        games, masks, labels = [], [], []
+        for (s, m, _) in sub_games:
+            games.append(s)
+            masks.append(m)
+            labels.append(label_id)
+        return games, masks, labels
+
+    def __getitem__(self, index):
+        sampled_ids = random.sample(self.player_dataset.player_ids, self.N)
+
+        all_support_games = []
+        all_support_masks = []
+        all_support_labels = []
+
+        all_query_games = []
+        all_query_masks = []
+        all_query_labels = []
+        for label_id, pid in enumerate(sampled_ids):
+            games = self.player_dataset.get_player_data_by_id(pid, self.K + self.Q)
+            random.shuffle(games)
+
+            assert len(games) >= self.K + self.Q, f"玩家 {pid} 样本不够"
+
+            support_games = games[:self.K]
+            query_games = games[self.K:self.K + self.Q]
+
+            support_games, support_masks, labels = self.set_creator(support_games, label_id)
+            all_support_games.extend(support_games)
+            all_support_masks.extend(support_masks)
+            all_support_labels.extend(labels)
+
+            query_games, query_masks, labels = self.set_creator(query_games, label_id)
+            all_query_games.extend(query_games)
+            all_query_masks.extend(query_masks)
+            all_query_labels.extend(labels)
+        
+        # padded_support_games = pad_sequence(all_support_games, batch_first=True, padding_value=0)
+        # padded_support_masks = pad_sequence(all_support_masks, batch_first=True, padding_value=True)
+        # padded_query_games = pad_sequence(all_query_games, batch_first=True, padding_value=0)
+        # padded_query_masks = pad_sequence(all_query_masks, batch_first=True, padding_value=True)
+        
+        return {
+            'support': {
+                'games': all_support_games,
+                'masks': all_support_masks,
+                'labels': torch.tensor(all_support_labels, dtype=torch.long),
+                'len': len(all_support_games)
+            },
+            'query': {
+                'games': all_query_games,
+                'masks': all_query_masks,
+                'labels': torch.tensor(all_query_labels, dtype=torch.long),
+                'len': len(all_query_games)
+            }
+        }
 
 
 class PlayerDataset(Dataset):

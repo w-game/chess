@@ -50,8 +50,8 @@ class PositionalEncoding(nn.Module):
         self.d_model = d_model
 
     def forward(self, x):
-        # x: [seq_len, d_model]
-        seq_len = x.size(0)
+        # x: [batch_size, seq_len, d_model]
+        seq_len = x.size(1)
         device = x.device
 
         position = torch.arange(0, seq_len, dtype=torch.float, device=device).unsqueeze(1)  # [seq_len, 1]
@@ -60,7 +60,7 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
 
-        x = x + pe
+        x = x + pe.unsqueeze(0) # [1, seq_len, d_model]
         return self.dropout(x)  # [batch_size, seq_len, d_model]
     
 class TransformerEncoder(nn.Module):
@@ -93,7 +93,7 @@ class TransformerEncoder(nn.Module):
         self.layernorm = nn.LayerNorm(transformer_d_model)
         self.temperature = 0.07
 
-    def forward(self, states):
+    def forward(self, states, mask=None):
         """
         参数:
           states: [batch, seq_len, 112, 8, 8]，状态序列
@@ -102,34 +102,28 @@ class TransformerEncoder(nn.Module):
         返回:
           整局风格向量: [batch, transformer_d_model]
         """
-        seq_len, C, H, W = states.size()
+        B, N, T, C, H, W = states.size()
 
+        mask = mask.view(B * N, T) if mask is not None else None  # [batch, seq_len]
+        
         # 编码状态
-        states = states.view(seq_len, C, H, W)
-        state_emb = self.state_encoder(states)  # [batch*seq_len, state_embed_dim]
-        state_emb = state_emb.view(seq_len, -1)
+        states = states.view(B * N * T, C, H, W)
+        state_emb = self.state_encoder(states)  # [batch*N, state_embed_dim]
+        state_emb = state_emb.view(B * N, T, -1)  # Reshape to [B, N, state_embed_dim]
 
-        token_embeddings = self.pos_encoder(state_emb)
-        token_embeddings = token_embeddings.unsqueeze(0)  # [batch, seq_len, transformer_d_model]
+        token_embeddings = self.pos_encoder(state_emb) # [batch, seq_len, d_model]
 
         # Transformer 编码
         transformer_output = self.transformer_encoder(
-            token_embeddings, src_key_padding_mask=None
+            token_embeddings, src_key_padding_mask=mask
         )
 
         # 序列池化（聚合）
-        # if mask is not None:
-        #     # False 表示有效位置
-        #     valid_mask = (~mask).unsqueeze(-1).float()  # [batch, seq_len, 1]
-        #     transformer_output = transformer_output * valid_mask
-        #     valid_counts = valid_mask.sum(dim=1)
-        #     pooled = transformer_output.sum(dim=1)
-
-        #     # 对于全 padding 的样本，设置为 small vector，避免 pooled=0
-        #     pooled[valid_counts.squeeze(-1) == 0] = 1e-6
-        #     pooled = pooled / valid_counts.clamp(min=1)
-        # else:
-        pooled = transformer_output.mean(dim=1)
+        valid_mask = (~mask).unsqueeze(-1).float()  # [B*N, T, 1]
+        masked_output = transformer_output * valid_mask  # [B*N, T, D]
+        sum_output = masked_output.sum(dim=1)  # [B*N, D]
+        count = valid_mask.sum(dim=1)  # [B*N, 1]
+        pooled = sum_output / (count + 1e-6)
 
         # 输出风格向量
         final_embedding = self.fc(pooled)
@@ -141,6 +135,9 @@ class TransformerEncoder(nn.Module):
 
         final_embedding = final_embedding / self.temperature
         contrastive_embedding = self.projection_head(final_embedding)
+
+        contrastive_embedding = contrastive_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
+        final_embedding = final_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
 
         return contrastive_embedding, final_embedding
     
