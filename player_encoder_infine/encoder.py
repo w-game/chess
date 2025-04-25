@@ -63,6 +63,27 @@ class PositionalEncoding(nn.Module):
         x = x + pe.unsqueeze(0) # [1, seq_len, d_model]
         return self.dropout(x)  # [batch_size, seq_len, d_model]
     
+
+class ProjectionHead(nn.Module):
+    def __init__(self, in_dim: int = 256, hidden_dim: int = 256, out_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim, bias=False),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, out_dim, bias=False),
+            nn.BatchNorm1d(out_dim, affine=False)  # 只做标准化，不学 γβ
+        )
+
+        # 推荐初始化：Kaiming 正态
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+
+    def forward(self, x):
+        z = self.net(x)           # [B, out_dim]
+        return F.normalize(z, p=2, dim=1)   # 保证对比时在单位球面
+    
 class TransformerEncoder(nn.Module):
     def __init__(self, cnn_in_channels=112, state_embed_dim=256, transformer_d_model=256,
                  num_heads=8, num_layers=3, dropout=0.1):
@@ -85,11 +106,12 @@ class TransformerEncoder(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, transformer_d_model))
-        self.projection_head = nn.Sequential(
-            nn.Linear(transformer_d_model, transformer_d_model),
-            nn.ReLU(),
-            nn.Linear(transformer_d_model, transformer_d_model)
-        )
+        # self.projection_head = nn.Sequential(
+        #     nn.Linear(transformer_d_model, transformer_d_model),
+        #     nn.ReLU(),
+        #     nn.Linear(transformer_d_model, transformer_d_model)
+        # )
+        self.proj_head = ProjectionHead(in_dim=transformer_d_model, hidden_dim=transformer_d_model, out_dim=transformer_d_model)
         self.layernorm = nn.LayerNorm(transformer_d_model)
         self.temperature = 0.07
 
@@ -134,12 +156,15 @@ class TransformerEncoder(nn.Module):
         final_embedding = final_embedding / (norm + 1e-6)
 
         final_embedding = final_embedding / self.temperature
-        contrastive_embedding = self.projection_head(final_embedding)
-
-        contrastive_embedding = contrastive_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
         final_embedding = final_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
 
-        return contrastive_embedding, final_embedding
+        # contrastive_embedding = self.projection_head(final_embedding)
+
+        # contrastive_embedding = contrastive_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
+
+        h = self.proj_head(final_embedding)
+
+        return h, final_embedding
     
 
 if __name__ == "__main__":
