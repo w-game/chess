@@ -67,6 +67,8 @@ class PositionalEncoding(nn.Module):
 class ProjectionHead(nn.Module):
     def __init__(self, in_dim: int = 256, hidden_dim: int = 256, out_dim: int = 128):
         super().__init__()
+
+        self.in_dim = in_dim
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim, bias=False),
             nn.BatchNorm1d(hidden_dim),
@@ -162,7 +164,7 @@ class TransformerEncoder(nn.Module):
 
         # contrastive_embedding = contrastive_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
 
-        h = self.proj_head(final_embedding)
+        h = self.proj_head(final_embedding.view(-1, self.fc.out_features)).view(B, N, -1)
 
         return h, final_embedding
     
