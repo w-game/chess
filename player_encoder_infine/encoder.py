@@ -9,9 +9,9 @@ class ResidualBlock(nn.Module):
     def __init__(self, channels):
         super(ResidualBlock, self).__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
-        self.bn1   = nn.BatchNorm2d(channels)
+        self.bn1   = nn.GroupNorm(32, channels)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
-        self.bn2   = nn.BatchNorm2d(channels)
+        self.bn2   = nn.GroupNorm(32, channels)
 
     def forward(self, x):
         residual = x
@@ -27,11 +27,11 @@ class BoardCNNEncoder(nn.Module):
 
         self.backbone = nn.Sequential(
             nn.Conv2d(in_channels, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
+            nn.GroupNorm(32, 256),
             nn.ReLU(inplace=True),
             *nn.ModuleList([ResidualBlock(256) for _ in range(6)]),
             nn.Conv2d(256, 2, kernel_size=1),
-            nn.BatchNorm2d(2),
+            nn.GroupNorm(1, 2),
             nn.ReLU(inplace=True),
             nn.Flatten(),
             nn.Linear(2 * 8 * 8, out_dim),
@@ -71,10 +71,10 @@ class ProjectionHead(nn.Module):
         self.in_dim = in_dim
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim, bias=False),
-            nn.BatchNorm1d(hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, out_dim, bias=False),
-            nn.BatchNorm1d(out_dim, affine=False)  # 只做标准化，不学 γβ
+            nn.LayerNorm(out_dim, elementwise_affine=False)  # 只做标准化，不学 γβ
         )
 
         # 推荐初始化：Kaiming 正态
@@ -108,33 +108,42 @@ class TransformerEncoder(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, transformer_d_model))
-        # self.projection_head = nn.Sequential(
-        #     nn.Linear(transformer_d_model, transformer_d_model),
-        #     nn.ReLU(),
-        #     nn.Linear(transformer_d_model, transformer_d_model)
-        # )
-        self.proj_head = ProjectionHead(in_dim=transformer_d_model, hidden_dim=transformer_d_model, out_dim=transformer_d_model)
+        self.projection_head = nn.Sequential(
+            nn.Linear(transformer_d_model, transformer_d_model),
+            nn.ReLU(),
+            nn.Linear(transformer_d_model, transformer_d_model)
+        )
+        # self.proj_head = ProjectionHead(in_dim=transformer_d_model, hidden_dim=transformer_d_model, out_dim=transformer_d_model)
         self.layernorm = nn.LayerNorm(transformer_d_model)
         self.temperature = 0.07
+
+    def state_forward(self, x):
+        """
+        参数:
+          x: [batch, N, T, 224, 8, 8]，状态序列
+        返回:
+          编码后的状态: [batch, N, T, state_embed_dim]
+        """
+        B, N, T, C, H, W = x.size()
+        x = x.reshape(-1, C, H, W)
+        x = self.state_encoder(x)
+        return x.view(B, N, T, -1)  # Reshape to [batch, N, T, state_embed_dim]
+
 
     def forward(self, states, mask=None):
         """
         参数:
-          states: [batch, seq_len, 112, 8, 8]，状态序列
-          actions: [batch, seq_len]，每步的动作索引
-          mask: [batch, seq_len]，Bool 类型掩码，True 表示 padding（无效位置）
+          states: [batch, N, T, state_embed_dim]，状态序列
+          mask: [batch, N, T]，Bool 类型掩码，True 表示 padding（无效位置）
         返回:
           整局风格向量: [batch, transformer_d_model]
         """
-        B, N, T, C, H, W = states.size()
+        state_emb = self.state_forward(states)  # [batch, N, T, state_embed_dim]
+        B, N, T, D = state_emb.size()
 
         mask = mask.view(B * N, T) if mask is not None else None  # [batch, seq_len]
+        state_emb = state_emb.view(B * N, T, D)  # [batch*N, seq_len, d_model]
         
-        # 编码状态
-        states = states.view(B * N * T, C, H, W)
-        state_emb = self.state_encoder(states)  # [batch*N, state_embed_dim]
-        state_emb = state_emb.view(B * N, T, -1)  # Reshape to [B, N, state_embed_dim]
-
         token_embeddings = self.pos_encoder(state_emb) # [batch, seq_len, d_model]
 
         # Transformer 编码
@@ -160,13 +169,11 @@ class TransformerEncoder(nn.Module):
         final_embedding = final_embedding / self.temperature
         final_embedding = final_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
 
-        # contrastive_embedding = self.projection_head(final_embedding)
+        contrastive_embedding = self.projection_head(final_embedding)
 
-        # contrastive_embedding = contrastive_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
+        contrastive_embedding = contrastive_embedding.view(B, N, -1)  # Reshape to [B, N, d_model]
 
-        h = self.proj_head(final_embedding.view(-1, self.fc.out_features)).view(B, N, -1)
-
-        return h, final_embedding
+        return contrastive_embedding, final_embedding
     
 
 if __name__ == "__main__":
