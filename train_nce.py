@@ -47,9 +47,9 @@ class Config:
     """集中管理所有超参数与路径。"""
 
     # ---- data ---- #
-    n_way: int = 10  # N
-    k_shot: int = 5  # K
-    q_query: int = 5  # Q
+    n_way: int = 5  # N
+    k_shot: int = 10  # K
+    q_query: int = 10  # Q
 
     train_json: str = "train_players"
     val_json: str = "val_players"
@@ -81,9 +81,9 @@ class Config:
     max_len: int = 40
 
     # ---- misc ---- #
-    model_idx: int = 22
+    model_idx: int = 0
     best: bool = True
-    out_dir: str = "./models/model_2025_05_09_2"
+    out_dir: str = "./models/model_2025_05_10_2"
     seed: int = 999
     amp_dtype: torch.dtype = torch.float16  # 自动混合精度类型
 
@@ -580,7 +580,8 @@ class EncoderTrainer:
         train_protoes = train_protoes.view(-1, self.cfg.d_model)  # [B*N,D]
         train_q_zs = train_q_zs.view(-1, self.cfg.q_query, self.cfg.d_model)
 
-        acc = self.calc_query_z_class_accuracy(torch.cat([train_protoes, test_protoes]), test_q_zs)
+        offset = train_protoes.size(0)
+        acc = self.calc_query_z_class_accuracy(torch.cat([train_protoes, test_protoes]), test_q_zs, offset) # [B*N]
 
         print("Accuracy:", acc.mean().item())
 
@@ -602,7 +603,7 @@ class EncoderTrainer:
 
     @torch.no_grad()
     def calc_query_z_class_accuracy(self, all_protos: torch.Tensor,
-                                    query_z: torch.Tensor) -> torch.Tensor:
+                                    query_z: torch.Tensor, offset) -> torch.Tensor:
         """
         计算每个 player 的 Q 条 query 的分类准确率。
 
@@ -617,20 +618,21 @@ class EncoderTrainer:
         N, Q, d = query_z.size()
 
         # 1. L2 归一化
-        protos_norm = F.normalize(all_protos, dim=1)       # [N, d]
-        queries_norm = F.normalize(query_z, dim=2)         # [N, Q, d]
+        # protos_norm = F.normalize(all_protos, dim=1)       # [N, d]
+        # queries_norm = F.normalize(query_z, dim=2)         # [N, Q, d]
+        q_z, protoes_task = map(lambda t: F.normalize(t, dim=-1), (query_z, all_protos))
+        
 
         # 2. 展平所有 query 并计算相似度
-        queries_flat = queries_norm.view(-1, d)         # [N*Q, d]
-        sims = torch.matmul(queries_flat, protos_norm.T)   # [N*Q, N]
+        queries_flat = q_z.view(-1, d)         # [N*Q, d]
+        sims = torch.matmul(queries_flat, protoes_task.T)   # [N*Q, N]
 
         # 3. 预测标签：取相似度最高的 prototype 下标
         preds = sims.argmax(dim=1)                         # [N*Q]
 
         # 4. 构造真实标签：第 i 个 player 的 Q 条 query 的标签都是 i
         true_labels = torch.arange(N, device=all_protos.device) \
-                        .repeat_interleave(Q)           # [N*Q]
-
+                        .repeat_interleave(Q) + offset  # [N*Q]
         # 5. 计算每条 query 的是否预测正确
         correct = (preds == true_labels).view(N, Q)        # [N, Q], bool
 
@@ -709,5 +711,5 @@ def test():
 
 
 if __name__ == "__main__":
-    # main()
-    test()
+    main()
+    # test()
