@@ -59,7 +59,7 @@ class Config:
     num_workers: int = 4
 
     # ---- memory ---- #
-    chunk_size: int = 4  # 每次送入 encoder 的子批量大小 (N*K 维度)
+    chunk_size: int = 5  # 每次送入 encoder 的子批量大小 (N*K 维度)
 
     # ---- model ---- #
     d_model: int = 256
@@ -83,7 +83,7 @@ class Config:
     # ---- misc ---- #
     model_idx: int = 0
     best: bool = True
-    out_dir: str = "./models/model_2025_05_10_2"
+    out_dir: str = "./models/model_2025_05_12"
     seed: int = 999
     amp_dtype: torch.dtype = torch.float16  # 自动混合精度类型
 
@@ -467,11 +467,13 @@ class EncoderTrainer:
                 protos = F.normalize(protos, dim=-1) # [1,N,D]
 
                 total_ce, total_cnt = 0.0, 0
+                contrastive_zs = []
                 for i in range(0, q_games.size(1), self.cfg.chunk_size):
                     mini_games = q_games[:, i:i+self.cfg.chunk_size]
                     mini_masks = q_masks[:, i:i+self.cfg.chunk_size]
                     mini_targets = targets[i:i+self.cfg.chunk_size]
                     contrastive_z, q_z = self._encode(mini_games, mini_masks) # [1,c,T,C,H,W], [1,c,T]
+                    contrastive_zs.append(contrastive_z)
                     q_z = F.normalize(q_z, dim=-1) # [1,c,D]
 
                     mini_logits = torch.matmul(
@@ -490,6 +492,8 @@ class EncoderTrainer:
                     total_cnt += mini_targets.numel()
 
                 ce = total_ce / total_cnt
+
+                contrastive_z = torch.cat(contrastive_zs, dim=1)  # [1,N*Q,D]
 
                 # contrastive_z, q_z = self._encode(q_games, q_masks) # [1,N*Q,D], [1,N*Q,D]
                 # q_z, protos = map(lambda t: F.normalize(t, dim=-1), (q_z, protos))
