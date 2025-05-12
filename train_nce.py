@@ -460,25 +460,52 @@ class EncoderTrainer:
                         sample["support"]["games"], # [1,N*K,T,C,H,W]
                         sample["support"]["masks"]  # [1,N*K,T]
                     )
-                
+
                 q_games, q_masks = sample["query"]["games"], sample["query"]["masks"] # [1,N*Q,T,C,H,W], [1,N*Q,T]
                 targets = sample["query"]["labels"].view(-1).to(self.device) # [1,N*Q]
 
-                contrastive_z, q_z = self._encode(q_games, q_masks) # [1,N*Q,D], [1,N*Q,D]
-                q_z, protos = map(lambda t: F.normalize(t, dim=-1), (q_z, protos))
+                protos = F.normalize(protos, dim=-1) # [1,N,D]
+
+                total_ce, total_cnt = 0.0, 0
+                for i in range(0, q_games.size(1), self.cfg.chunk_size):
+                    mini_games = q_games[:, i:i+self.cfg.chunk_size]
+                    mini_masks = q_masks[:, i:i+self.cfg.chunk_size]
+                    mini_targets = targets[i:i+self.cfg.chunk_size]
+                    contrastive_z, q_z = self._encode(mini_games, mini_masks) # [1,c,T,C,H,W], [1,c,T]
+                    q_z = F.normalize(q_z, dim=-1) # [1,c,D]
+
+                    mini_logits = torch.matmul(
+                        q_z.unsqueeze(2),                    # [B, c, 1, D]
+                        protos.unsqueeze(1).transpose(2, 3)  # [B, 1, D, N]
+                    ).squeeze(3)                                  # [B, c, N]
+
+                    mini_logits = mini_logits * self.logit_scale.exp().clamp(1, 50) # [B, c, N]
+                    ce_sum = F.cross_entropy(
+                        mini_logits.view(-1, self.cfg.n_way),
+                        mini_targets,
+                        reduction="sum",
+                    )
+
+                    total_ce += ce_sum
+                    total_cnt += mini_targets.numel()
+
+                ce = total_ce / total_cnt
+
+                # contrastive_z, q_z = self._encode(q_games, q_masks) # [1,N*Q,D], [1,N*Q,D]
+                # q_z, protos = map(lambda t: F.normalize(t, dim=-1), (q_z, protos))
 
                 # CE
                 # logits = (q_z.unsqueeze(2) * protos.unsqueeze(1)).sum(-1) * self.logit_scale.exp().clamp(1, 50)
                 # ce = F.cross_entropy(logits.view(-1, self.cfg.n_way), targets)
 
-                logits = torch.matmul(
-                    q_z.unsqueeze(2),                    # [B, N*Q, 1, D]
-                    protos.unsqueeze(1).transpose(2, 3)  # [B, 1, D, N]
-                ).squeeze(3)                                  # [B, N*Q, N]
+                # logits = torch.matmul(
+                #     q_z.unsqueeze(2),                    # [B, N*Q, 1, D]
+                #     protos.unsqueeze(1).transpose(2, 3)  # [B, 1, D, N]
+                # ).squeeze(3)                                  # [B, N*Q, N]
 
-                logit_scale = self.logit_scale.exp().clamp(1, 50)
-                logits = logits * logit_scale                 # [B, N*Q, N]
-                ce = F.cross_entropy(logits.view(-1, self.cfg.n_way), targets)
+                # logit_scale = self.logit_scale.exp().clamp(1, 50)
+                # logits = logits * logit_scale                 # [B, N*Q, N]
+                # ce = F.cross_entropy(logits.view(-1, self.cfg.n_way), targets)
 
                 # SupCon (支持集)
                 query_labels = sample["query"]["labels"].view(-1).to(self.device)
@@ -585,21 +612,6 @@ class EncoderTrainer:
 
         print("Accuracy:", acc.mean().item())
 
-        # protoes = protoes.unsqueeze(1) # [B*N,1,D]
-
-        # cos_sim = (protoes * q_zs).sum(-1) # [B*N,Q]
-
-        # mean_sim = cos_sim.mean(dim=1) # [B*N]
-
-        # print("⟂ proto‑proto mean:", (protoes @ protoes.T).mean().item())  
-        # print("⟂ query‑query mean:", (q_zs.view(-1, q_zs.size(-1)) @  
-        #                             q_zs.view(-1, q_zs.size(-1)).T).mean().item()) 
-
-        # print(cos_sim.shape, mean_sim.shape)
-        # print(mean_sim)
-
-        # acc = self.calc_query_z_class_accuracy(protoes, q_zs)
-        # print(acc.mean().item())
 
     @torch.no_grad()
     def calc_query_z_class_accuracy(self, all_protos: torch.Tensor,
