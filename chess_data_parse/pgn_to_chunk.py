@@ -24,10 +24,13 @@ def worker(player_name):
     for color in ["white", "black"]:
         target_dir = f"{player_dir}/{color}"
         if os.path.exists(target_dir) and os.path.isdir(target_dir):
-            continue
-            # shutil.rmtree(target_dir)
+            shutil.rmtree(target_dir)
 
-        subprocess.run(f"bzcat {color}.pgn.bz2 | pgn-extract -7 -C -N -#100",
+        if os.path.exists(target_dir) and len(os.listdir(f"{target_dir}/supervised-0")) > 5:
+            print(f"Skipping {target_dir} as it already exists")
+            continue
+
+        subprocess.run(f"bzcat {color}.pgn.bz2 | pgn-extract -7 -C -N -#1000",
                        shell=True, text=True, check=True, cwd=player_dir)
 
         subprocess.run(f"trainingdata-tool -v 1.pgn",
@@ -41,6 +44,7 @@ if __name__ == "__main__":
     # print(f"Using {num_workers} workers")
 
     players = os.listdir("./players")
+    print(f"Found {len(players)} players")
 
     for player in players:
         worker(player)

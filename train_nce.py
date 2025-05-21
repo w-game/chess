@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import os
 """
 encoder_trainer_refactored.py
@@ -47,7 +48,7 @@ class Config:
     """集中管理所有超参数与路径。"""
 
     # ---- data ---- #
-    n_way: int = 5  # N
+    n_way: int = 20  # N
     k_shot: int = 10  # K
     q_query: int = 10  # Q
 
@@ -83,7 +84,7 @@ class Config:
     # ---- misc ---- #
     model_idx: int = 0
     best: bool = True
-    out_dir: str = "./models/model_2025_05_12"
+    out_dir: str = "./models/model_2025_05_16"
     seed: int = 999
     amp_dtype: torch.dtype = torch.float16  # 自动混合精度类型
 
@@ -276,10 +277,11 @@ class EncoderTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.encoder = encoder.to(self.device)
-        self.setagg = AttnSetAgg(cfg.d_model).to(self.device)
-        self.logit_scale = nn.Parameter(torch.ones([], device=self.device) * 2.3)
+        # self.setagg = AttnSetAgg(cfg.d_model).to(self.device)
+        self.logit_scale = nn.Parameter(torch.ones([], device=self.device) * math.log(20))
 
-        params = list(self.encoder.parameters()) + list(self.setagg.parameters()) + [self.logit_scale]
+        # params = list(self.encoder.parameters()) + list(self.setagg.parameters()) + [self.logit_scale]
+        params = list(self.encoder.parameters()) + [self.logit_scale]
         self.optim = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
         self.scaler = torch.GradScaler(enabled=self.device.type == "cuda")
 
@@ -293,7 +295,7 @@ class EncoderTrainer:
         if os.path.exists(self.model_path):
             self.ckpt = torch.load(self.model_path, map_location=self.device)
             self.encoder.load_state_dict(self.ckpt["encoder"])
-            self.setagg.load_state_dict(self.ckpt["setagg"])
+            # self.setagg.load_state_dict(self.ckpt["setagg"])
             self.logit_scale.data.copy_(self.ckpt["logit_scale"])
             self.optim.load_state_dict(self.ckpt["optimizer"])
             self.scaler.load_state_dict(self.ckpt["scaler"])
@@ -314,23 +316,7 @@ class EncoderTrainer:
     # ---------------------------------------------------------------------
 
     def _encode(self, games: torch.Tensor, masks: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        games, masks = games.to(self.device), masks.to(self.device)
-
-        # contrastive_zs, zs = [], []
-        # chunk_size = self.cfg.chunk_size  # 用于控制单次前向的显存
-
-        # for i in range(0, games.size(1), chunk_size):  # games: [1, N*K, ...]
-        #     mini_games = games[:, i:i+chunk_size]      # [1, c, T, C, H, W]
-        #     mini_masks = masks[:, i:i+chunk_size]      # [1, c, T]
-
-        #     with self._amp_ctx():
-        #         c_z, z = self.encoder(mini_games, mini_masks)
-
-        #     contrastive_zs.append(c_z)
-        #     zs.append(z)
-
-        # return torch.cat(contrastive_zs, dim=1), torch.cat(zs, dim=1)
-
+        # games, masks = games.to(self.device), masks.to(self.device)
         with self._amp_ctx():
             contrastive_z, z = self.encoder(games, masks)
         
@@ -370,38 +356,41 @@ class EncoderTrainer:
                     merged[i] = torch.cat([t, pad], dim=1)
             z = torch.stack(merged, dim=1)  # [B,N,max_k,D]
 
-        return s_contrastive_z, self.setagg(z)               # [B,N,D](self, g: torch.Tensor, m: torch.Tensor):
+        return s_contrastive_z, z              # [B,N,D](self, g: torch.Tensor, m: torch.Tensor):
 
     # ---------------- validation ---------------- #
 
     @torch.no_grad()
     def _eval(self, fuse_views: bool = False) -> float:
         self.encoder.eval()
-        self.setagg.eval()
+        # self.setagg.eval()
         total_loss, total_n = 0.0, 0
         for sample in self.val_dl:
             sample = collate_fn([sample])
-            q_games, q_masks = sample["query"]["games"], sample["query"]["masks"]
+            q_games, q_masks = sample["query"]["games"].to(self.device), sample["query"]["masks"].to(self.device)  # [1,N*Q,T,C,H,W], [1,N*Q,T]
             targets = sample["query"]["labels"].view(-1).to(self.device)  # [1,N*Q]
 
-            if fuse_views and self.cfg.info_nce_coef > 0:
-                v_g, v_m, v_c, v_l = sample_views(sample, self.cfg)
-                _, protos = self._build_proto(
-                    sample["support"]["games"],
-                    sample["support"]["masks"],
-                    support_views={
-                        "game_views": v_g[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view],
-                        "mask_views": v_m[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view],
-                        "label_views": v_l.view(-1)[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view]
-                    }
-                )
-            else:
+            # if fuse_views and self.cfg.info_nce_coef > 0:
+            #     v_g, v_m, v_c, v_l = sample_views(sample, self.cfg)
+            #     _, s_z = self._build_proto(
+            #         sample["support"]["games"],
+            #         sample["support"]["masks"],
+            #         support_views={
+            #             "game_views": v_g[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view],
+            #             "mask_views": v_m[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view],
+            #             "label_views": v_l.view(-1)[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view]
+            #         }
+            #     )
+            # else:
                 # 直接使用原始数据
-                _, protos = self._build_proto(
-                    sample["support"]["games"],
-                    sample["support"]["masks"]
-                )
+            _, s_z = self._build_proto(
+                sample["support"]["games"].to(self.device),
+                sample["support"]["masks"].to(self.device)
+            )
 
+            protos = s_z.mean(dim=2)  # [1,N,D]
+
+            # protos = self.setagg(s_z)  # [1,N,D]
             _, q_z = self._encode(q_games, q_masks)
             q_z, protos = map(lambda t: F.normalize(t, dim=-1), (q_z, protos))
             logits = (q_z.unsqueeze(2) * protos.unsqueeze(1)).sum(-1) * self.logit_scale.exp().clamp(1, 50)
@@ -418,7 +407,7 @@ class EncoderTrainer:
             "epoch": epoch,
             "best_loss": best_loss,
             "encoder": self.encoder.state_dict(),
-            "setagg": self.setagg.state_dict(),
+            # "setagg": self.setagg.state_dict(),
             "logit_scale": self.logit_scale.data,   # 仅 tensor
             "optimizer": self.optim.state_dict(),
             "scaler": self.scaler.state_dict(),
@@ -433,107 +422,94 @@ class EncoderTrainer:
         end_epoch = start_epoch + self.cfg.epochs
         for epoch in range(start_epoch, end_epoch):
             self.encoder.train()
-            self.setagg.train()
+            # self.setagg.train()
             epoch_loss = 0.0
-            
             for batch_idx, raw in enumerate(self.train_dl):
-                if self.device.type == "cuda":
-                    torch.cuda.reset_peak_memory_stats()
+                # if self.device.type == "cuda":
+                #     torch.cuda.reset_peak_memory_stats()
                 sample = collate_fn([raw])
-                self.optim.zero_grad()
 
-                # --- forward & loss --- #
-                if self.cfg.info_nce_coef > 0:
-                    v_g, v_m, v_c, v_l = sample_views(sample, self.cfg)
+                q_games, q_masks = sample["query"]["games"].to(self.device), sample["query"]["masks"].to(self.device) # [1,N*Q,T,C,H,W], [1,N*Q,T]
 
-                    _, protos = self._build_proto(
-                        sample["support"]["games"], # [1,N*K,T,C,H,W]
-                        sample["support"]["masks"], # [1,N*K,T]
-                        support_views={
-                            "game_views": v_g[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view],
-                            "mask_views": v_m[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view],
-                            "label_views": v_l.view(-1)[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view]
-                        }
-                    )
-                else:
-                    _, protos = self._build_proto(
-                        sample["support"]["games"], # [1,N*K,T,C,H,W]
-                        sample["support"]["masks"]  # [1,N*K,T]
-                    )
-
-                q_games, q_masks = sample["query"]["games"], sample["query"]["masks"] # [1,N*Q,T,C,H,W], [1,N*Q,T]
                 targets = sample["query"]["labels"].view(-1).to(self.device) # [1,N*Q]
 
+                q_games = q_games.view(self.cfg.batch_size, self.cfg.n_way, self.cfg.q_query, *q_games.shape[2:]) # [1,N,Q,T,C,H,W]
+                q_masks = q_masks.view(self.cfg.batch_size, self.cfg.n_way, self.cfg.q_query, *q_masks.shape[2:]) # [1,N,Q,T]
+                targets = targets.view(self.cfg.batch_size, self.cfg.n_way, self.cfg.q_query) # [1,N,Q]
+
+                n_chunks = math.ceil((q_games.size(2) / self.cfg.chunk_size) * (self.cfg.n_way / 5))
+
+                # 1. 计算原型
+                # if self.cfg.info_nce_coef > 0:
+                #     v_g, v_m, v_c, v_l = sample_views(sample, self.cfg)
+
+                #     _, s_z = self._build_proto(
+                #         sample["support"]["games"], # [1,N*K,T,C,H,W]
+                #         sample["support"]["masks"], # [1,N*K,T]
+                #         support_views={
+                #             "game_views": v_g[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view],
+                #             "mask_views": v_m[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view],
+                #             "label_views": v_l.view(-1)[:self.cfg.n_way * self.cfg.k_shot * self.cfg.k_view]
+                #         }
+                #     )
+                # else:
+                _, s_z = self._build_proto(
+                    sample["support"]["games"].to(self.device), # [1,N*K,T,C,H,W]
+                    sample["support"]["masks"].to(self.device)  # [1,N*K,T]
+                )
+                protos = s_z.mean(dim=2)
                 protos = F.normalize(protos, dim=-1) # [1,N,D]
 
-                total_ce, total_cnt = 0.0, 0
-                contrastive_zs = []
-                for i in range(0, q_games.size(1), self.cfg.chunk_size):
-                    mini_games = q_games[:, i:i+self.cfg.chunk_size]
-                    mini_masks = q_masks[:, i:i+self.cfg.chunk_size]
-                    mini_targets = targets[i:i+self.cfg.chunk_size]
-                    contrastive_z, q_z = self._encode(mini_games, mini_masks) # [1,c,T,C,H,W], [1,c,T]
-                    contrastive_zs.append(contrastive_z)
-                    q_z = F.normalize(q_z, dim=-1) # [1,c,D]
 
-                    mini_logits = torch.matmul(
-                        q_z.unsqueeze(2),                    # [B, c, 1, D]
-                        protos.unsqueeze(1).transpose(2, 3)  # [B, 1, D, N]
-                    ).squeeze(3)                                  # [B, c, N]
+                running_loss = 0.0
+                for ni in range(0, self.cfg.n_way, 5):
+                    for i in range(0, q_games.size(2), self.cfg.chunk_size):
+                        self.optim.zero_grad(set_to_none=True)
 
-                    mini_logits = mini_logits * self.logit_scale.exp().clamp(1, 50) # [B, c, N]
-                    ce_sum = F.cross_entropy(
-                        mini_logits.view(-1, self.cfg.n_way),
-                        mini_targets,
-                        reduction="sum",
-                    )
+                        mini_games = q_games[:, ni:ni+5, i:i+self.cfg.chunk_size].reshape(self.cfg.batch_size, -1, *q_games.shape[3:]) # [1,c,T,C,H,W]
+                        mini_masks = q_masks[:, ni:ni+5, i:i+self.cfg.chunk_size].reshape(self.cfg.batch_size, -1, *q_masks.shape[3:]) # [1,c,T]
+                        mini_targets = targets[:, ni:ni+5, i:i+self.cfg.chunk_size].reshape(self.cfg.batch_size, -1) # [1,c,D]
+                        contrastive_z, q_z = self._encode(mini_games, mini_masks) # [1,c,D], [1,c,D]
+                        # protos = self.setagg(s_z) # [1,N,D]
 
-                    total_ce += ce_sum
-                    total_cnt += mini_targets.numel()
+                        q_z = F.normalize(q_z, dim=-1) # [1,c,D]
 
-                ce = total_ce / total_cnt
 
-                contrastive_z = torch.cat(contrastive_zs, dim=1)  # [1,N*Q,D]
+                        mini_logits = torch.matmul(
+                            q_z.unsqueeze(2),                    # [B, c, 1, D]
+                            protos.unsqueeze(1).transpose(2, 3)  # [B, 1, D, N]
+                        ).squeeze(2)                               # [B, c, N]
 
-                # contrastive_z, q_z = self._encode(q_games, q_masks) # [1,N*Q,D], [1,N*Q,D]
-                # q_z, protos = map(lambda t: F.normalize(t, dim=-1), (q_z, protos))
+                        mini_logits = mini_logits * self.logit_scale.exp().clamp(1, 50) # [B, c, N]
+                        ce = F.cross_entropy(
+                            mini_logits.view(-1, self.cfg.n_way),      # [B*c, N]
+                            mini_targets.view(-1)                      # [B*c]
+                        )
 
-                # CE
-                # logits = (q_z.unsqueeze(2) * protos.unsqueeze(1)).sum(-1) * self.logit_scale.exp().clamp(1, 50)
-                # ce = F.cross_entropy(logits.view(-1, self.cfg.n_way), targets)
+                        supcon = self.supcon_loss(
+                            contrastive_z.view(-1, contrastive_z.size(-1)),
+                            mini_targets.view(-1)
+                        )
 
-                # logits = torch.matmul(
-                #     q_z.unsqueeze(2),                    # [B, N*Q, 1, D]
-                #     protos.unsqueeze(1).transpose(2, 3)  # [B, 1, D, N]
-                # ).squeeze(3)                                  # [B, N*Q, N]
+                        loss = ce + 0.1 * supcon
+                        running_loss += ce.item()
+                        self.scaler.scale(loss / (n_chunks)).backward()
 
-                # logit_scale = self.logit_scale.exp().clamp(1, 50)
-                # logits = logits * logit_scale                 # [B, N*Q, N]
-                # ce = F.cross_entropy(logits.view(-1, self.cfg.n_way), targets)
+                        self.scaler.step(self.optim)
+                        self.scaler.update()
 
-                # SupCon (支持集)
-                query_labels = sample["query"]["labels"].view(-1).to(self.device)
-                supcon = self.supcon_loss(contrastive_z.view(-1, contrastive_z.size(-1)), query_labels)
-
-                # 总损失
-                loss = ce + supcon * 0.1  # 比例按需调整
-
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optim)
-                self.scaler.update()
-
-                epoch_loss += ce.item()
-
+                epoch_loss += running_loss / (n_chunks)
+                
                 if batch_idx % 20 == 0:
-                    mem = gpu_mem_str()
+                    # mem = gpu_mem_str()
                     print(
                         f"[Epoch {epoch}/{end_epoch}] "
                         f"Batch {batch_idx:4d}/{len(self.train_dl)} | "
                         f"loss={loss.item():.4f} | ce={ce.item():.4f} | "
                         f"supcon={supcon.item():.4f} | "
-                        f"logit_scale={self.logit_scale.item():.4f}{mem}"
+                        f"logit_scale={self.logit_scale.item():.4f}"
                     )
-                    mem_summary_if(f"e{epoch}_b{batch_idx}")
+                    # mem_summary_if(f"e{epoch}_b{batch_idx}")
 
             # ---- epoch end ---- #
             val_loss = self._eval(True)
@@ -546,10 +522,12 @@ class EncoderTrainer:
             if val_loss < best_loss:
                 best_loss = val_loss
                 tag = "best"
+            
 
             self.save_model(epoch, best_loss, self.out_dir, tag)
 
             self._plot_curve(train_curve, val_curve)
+            torch.cuda.empty_cache()
 
     # ---------------------------------------------------------------------
     # plot utils
@@ -570,7 +548,7 @@ class EncoderTrainer:
         for idx, sample in enumerate(dl):
             sample = collate_fn([sample])
             v_g, v_m, v_c, v_l = sample_views(sample, self.cfg)
-            _, protoes_task = self._build_proto(
+            _, s_z = self._build_proto(
                 sample["support"]["games"],
                 sample["support"]["masks"],
                 support_views={
@@ -584,6 +562,8 @@ class EncoderTrainer:
             targets = sample["query"]["labels"].view(-1).to(self.device)
             _, q_z = self._encode(q_games, q_masks) # [1,N*Q,D]
 
+            # protoes_task = self.setagg(s_z) # [1,N,D]
+            protoes_task = s_z.mean(dim=2)
             q_z, protoes_task = map(lambda t: F.normalize(t, dim=-1), (q_z, protoes_task))
             logits = (q_z.unsqueeze(2) * protoes_task.unsqueeze(1)).sum(-1) * self.logit_scale.exp().clamp(1, 50)
             loss = F.cross_entropy(logits.view(-1, self.cfg.n_way), targets)
